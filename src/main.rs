@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
+mod map_server;
+
 #[derive(Debug, Deserialize)]
 struct Athlete {
     id: i64,
@@ -33,6 +35,10 @@ struct Cli {
     /// Page number for activities list
     #[arg(long, default_value_t = 1)]
     page: u32,
+
+    /// Start a web server to display GPX files on a Leaflet map
+    #[arg(long)]
+    serve_map: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -71,6 +77,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load environment variables from .env if present
     let _ = dotenv();
     let args = Cli::parse();
+
+    // Serve map mode - start web server to display GPX files
+    if args.serve_map {
+        return map_server::serve_map_server().await;
+    }
 
     // Credentials are read from environment (.env supported):
     // STRAVA_CLIENT_ID (numeric), STRAVA_CLIENT_SECRET
@@ -336,6 +347,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+// ...existing code (build_gpx_xml, xml_escape functions - keep these)...
 
 fn build_gpx_xml(name: &str, streams: &StreamSet) -> String {
     let mut xml = String::new();
