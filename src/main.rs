@@ -1,11 +1,7 @@
 use axum::{extract::Query, extract::State, routing::get, Router};
-use chrono::{DateTime, Duration, Utc};
 use clap::Parser;
 use dotenvy::dotenv;
-use reqwest::header::{AUTHORIZATION, USER_AGENT};
-use serde::{Deserialize, Serialize};
 use std::env;
-use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -13,15 +9,8 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 mod map_server;
+mod strava;
 mod tiles;
-
-#[derive(Debug, Deserialize)]
-struct Athlete {
-    id: i64,
-    username: Option<String>,
-    firstname: Option<String>,
-    lastname: Option<String>,
-}
 
 #[derive(Debug, Parser)]
 #[command(name = "rust_strava", about = "Strava API Rust example")]
@@ -41,38 +30,6 @@ struct Cli {
     /// Start a web server to display GPX files on a Leaflet map
     #[arg(long)]
     serve_map: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct TokenResponse {
-    token_type: Option<String>,
-    access_token: String,
-    expires_at: Option<i64>,
-    expires_in: Option<i64>,
-    refresh_token: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ActivitySummary {
-    id: i64,
-    name: Option<String>,
-    start_date: Option<String>, // ISO 8601 format: "2024-01-15T10:30:00Z"
-}
-
-#[derive(Debug, Deserialize)]
-struct TypedStream<T> {
-    #[serde(default)]
-    data: Vec<T>,
-}
-
-#[derive(Debug, Deserialize)]
-struct StreamSet {
-    #[serde(default)]
-    latlng: Option<TypedStream<[f64; 2]>>, // key_by_type=true shape: { latlng: { data: [[lat, lon], ...] } }
-    #[serde(default)]
-    time: Option<TypedStream<i64>>, // { time: { data: [..] } }
-    #[serde(default)]
-    altitude: Option<TypedStream<f64>>, // { altitude: { data: [..] } }
 }
 
 #[tokio::main]
@@ -99,41 +56,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
 
-        let client = reqwest::Client::builder()
-            .user_agent("rust-strava-example/0.1")
-            .build()?;
+        let client = strava::create_client()?;
 
-        let resp = client
-            .post("https://www.strava.com/oauth/token")
-            .form(&serde_json::json!({
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "code": code,
-                "grant_type": "authorization_code",
-            }))
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            eprintln!("Token exchange failed: status={} body={}", status, body);
-            return Ok(());
+        match strava::exchange_code(&client, &client_id, &client_secret, &code).await {
+            Ok(token) => {
+                println!("Access token: {}", token.access_token);
+                if let Some(rt) = token.refresh_token {
+                    println!("Refresh token: {}", rt);
+                }
+                println!("Note: Save tokens securely. Do NOT commit them.");
+            }
+            Err(e) => {
+                eprintln!("{}", e);
+            }
         }
-
-        let token: TokenResponse = resp.json().await?;
-        println!("Access token: {}", token.access_token);
-        if let Some(rt) = token.refresh_token {
-            println!("Refresh token: {}", rt);
-        }
-        println!("Note: Save tokens securely. Do NOT commit them.");
         return Ok(());
     }
 
     // If no exchange requested, run a local OAuth authorize + callback to obtain a fresh token with required scopes.
-    let client = reqwest::Client::builder()
-        .user_agent("rust-strava-example/0.1")
-        .build()?;
+    let client = strava::create_client()?;
 
     let (tx, rx) = oneshot::channel::<String>();
     #[derive(Clone)]
@@ -188,11 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Use localhost redirect and ensure it matches your Strava app settings exactly.
     let redirect_uri = "http://localhost:8080/callback";
-    // Hardcode scopes to include private activities as requested
-    let authorize_url = format!(
-        "https://www.strava.com/oauth/authorize?client_id={}&response_type=code&redirect_uri={}&approval_prompt=auto&scope=read,activity:read,activity:read_all",
-        client_id, redirect_uri
-    );
+    let authorize_url = strava::get_authorize_url(&client_id, redirect_uri);
     println!("Opening browser for OAuth: {}", authorize_url);
     let _ = Command::new("open").arg(&authorize_url).status();
 
@@ -213,53 +150,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     server_handle.abort();
 
     // Exchange code for access token
-    let exchange_resp = client
-        .post("https://www.strava.com/oauth/token")
-        .form(&serde_json::json!({
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "code": code,
-            "grant_type": "authorization_code",
-        }))
-        .send()
-        .await?;
-
-    let token_value = if exchange_resp.status().is_success() {
-        let token: TokenResponse = exchange_resp.json().await?;
-        println!("Obtained access token via OAuth.");
-        token.access_token
-    } else {
-        let status = exchange_resp.status();
-        let body = exchange_resp.text().await.unwrap_or_default();
-        eprintln!("Token exchange failed: status={} body={}", status, body);
-        println!("Falling back to initial access token (scopes may be insufficient).");
-        env::var("STRAVA_ACCESS_TOKEN").unwrap_or_default()
+    let token_value = match strava::exchange_code(&client, &client_id, &client_secret, &code).await
+    {
+        Ok(token) => {
+            println!("Obtained access token via OAuth.");
+            token.access_token
+        }
+        Err(e) => {
+            eprintln!("{}", e);
+            println!("Falling back to initial access token (scopes may be insufficient).");
+            env::var("STRAVA_ACCESS_TOKEN").unwrap_or_default()
+        }
     };
-
-    // Env token no longer used in this one-off test; we refresh or fallback to hardcoded values.
 
     // Reuse client; use token_value for subsequent calls
 
     // Example 1: Get current athlete profile
-    let athlete_resp = client
-        .get("https://www.strava.com/api/v3/athlete")
-        .header(AUTHORIZATION, format!("Bearer {}", token_value))
-        .header(USER_AGENT, "rust-strava-example/0.1")
-        .send()
-        .await?;
-
-    if !athlete_resp.status().is_success() {
-        let status = athlete_resp.status();
-        let body = athlete_resp.text().await.unwrap_or_default();
-        eprintln!(
-            "Athlete request failed: status={} body={}\nHint: 401 means the token is invalid or expired, or scopes are missing. Ensure you authorized with at least 'read'.",
-            status,
-            body
-        );
-        return Ok(());
-    }
-
-    let athlete: Athlete = athlete_resp.json().await?;
+    let athlete = match strava::get_athlete(&client, &token_value).await {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{}", e);
+            return Ok(());
+        }
+    };
 
     println!(
         "Authenticated as athlete id={} name={} {} username={}",
@@ -269,150 +182,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         athlete.username.as_deref().unwrap_or("")
     );
 
-    // Example 2: List recent activities (first 5)
-    let activities_resp = client
-        .get("https://www.strava.com/api/v3/athlete/activities")
-        .query(&[("per_page", args.per_page), ("page", args.page)])
-        .header(AUTHORIZATION, format!("Bearer {}", token_value))
-        .header(USER_AGENT, "rust-strava-example/0.1")
-        .send()
-        .await?;
+    // Example 2: List recent activities
+    let activities =
+        match strava::get_activities(&client, &token_value, args.per_page, args.page).await {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("{}", e);
+                return Ok(());
+            }
+        };
 
-    if !activities_resp.status().is_success() {
-        let status = activities_resp.status();
-        let body = activities_resp.text().await.unwrap_or_default();
-        eprintln!(
-            "Activities request failed: status={} body={}\nHint: 401 usually means the token lacks required scopes (e.g., 'activity:read'), is expired, or invalid. Regenerate via OAuth with correct scopes.",
-            status,
-            body
-        );
-        return Ok(());
-    }
-
-    let activities_json: serde_json::Value = activities_resp.json().await?;
-    println!(
-        "Recent activities (JSON):\n{}",
-        serde_json::to_string_pretty(&activities_json)?
-    );
-
-    // Parse minimal activity summaries
-    let activities: Vec<ActivitySummary> =
-        serde_json::from_value(activities_json.clone()).unwrap_or_default();
     if activities.is_empty() {
         return Ok(());
     }
 
-    // Create gpx output folder
-    let mut out_dir = PathBuf::from("gpx");
-    fs::create_dir_all(&out_dir)?;
-
-    // For each activity, fetch streams and generate GPX
-    for act in activities.iter() {
-        let id = act.id;
-        let name = act.name.as_deref().unwrap_or("");
-        println!("Exporting GPX for activity {} - {}", id, name);
-
-        // Fetch streams (latlng, time, altitude)
-        let streams_resp = client
-            .get(format!(
-                "https://www.strava.com/api/v3/activities/{}/streams",
-                id
-            ))
-            .query(&[("keys", "latlng,time,altitude"), ("key_by_type", "true")])
-            .header(AUTHORIZATION, format!("Bearer {}", token_value))
-            .header(USER_AGENT, "rust-strava-example/0.1")
-            .send()
-            .await?;
-
-        if !streams_resp.status().is_success() {
-            let status = streams_resp.status();
-            let body = streams_resp.text().await.unwrap_or_default();
-            eprintln!(
-                "Streams request failed for {}: status={} body={}",
-                id, status, body
-            );
-            continue;
-        }
-
-        let streams_json: serde_json::Value = streams_resp.json().await?;
-        let streams: StreamSet = serde_json::from_value(streams_json).unwrap_or(StreamSet {
-            latlng: None,
-            time: None,
-            altitude: None,
-        });
-
-        // Build GPX content
-        let file_path = out_dir.join(format!("activity_{}.gpx", id));
-        let start_date = act.start_date.as_deref();
-        let gpx = build_gpx_xml(name, start_date, &streams);
-        fs::write(&file_path, gpx)?;
-        println!("Saved GPX: {}", file_path.display());
-    }
+    // Export activities as GPX files
+    let out_dir = PathBuf::from("gpx");
+    strava::export_activities_as_gpx(&client, &token_value, &activities, &out_dir).await?;
 
     Ok(())
-}
-
-fn build_gpx_xml(name: &str, start_date: Option<&str>, streams: &StreamSet) -> String {
-    let mut xml = String::new();
-    xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-    xml.push_str("<gpx version=\"1.1\" creator=\"rust-strava-example\" xmlns=\"http://www.topografix.com/GPX/1/1\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd\">\n");
-
-    // Parse start_date for calculating trackpoint times
-    let start_time: Option<DateTime<Utc>> = start_date.and_then(|d| d.parse().ok());
-
-    // Add metadata with time if available
-    if let Some(date) = start_date {
-        xml.push_str("  <metadata>\n");
-        xml.push_str(&format!("    <time>{}</time>\n", xml_escape(date)));
-        xml.push_str("  </metadata>\n");
-    }
-
-    xml.push_str(&format!(
-        "  <trk>\n    <name>{}</name>\n    <trkseg>\n",
-        xml_escape(name)
-    ));
-
-    let points = streams.latlng.as_ref().map(|v| v.data.len()).unwrap_or(0);
-    for i in 0..points {
-        let (lat, lon) = streams
-            .latlng
-            .as_ref()
-            .and_then(|v| v.data.get(i))
-            .map(|p| (p[0], p[1]))
-            .unwrap_or((0.0, 0.0));
-        let ele = streams
-            .altitude
-            .as_ref()
-            .and_then(|v| v.data.get(i))
-            .copied();
-        // Calculate absolute time for this trackpoint
-        let point_time: Option<DateTime<Utc>> = start_time.and_then(|st| {
-            streams
-                .time
-                .as_ref()
-                .and_then(|t| t.data.get(i))
-                .map(|&secs| st + Duration::seconds(secs))
-        });
-
-        xml.push_str(&format!(
-            "      <trkpt lat=\"{:.7}\" lon=\"{:.7}\">\n",
-            lat, lon
-        ));
-        if let Some(e) = ele {
-            xml.push_str(&format!("        <ele>{:.2}</ele>\n", e));
-        }
-        if let Some(t) = point_time {
-            xml.push_str(&format!("        <time>{}</time>\n", t.to_rfc3339()));
-        }
-        xml.push_str("      </trkpt>\n");
-    }
-
-    xml.push_str("    </trkseg>\n  </trk>\n</gpx>\n");
-    xml
-}
-
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
