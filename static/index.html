@@ -1,137 +1,283 @@
 <!DOCTYPE html>
 <html>
+
 <head>
-    <title>Strava GPX Map</title>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <style>
-        body { margin: 0; padding: 0; display: flex; }
-        #sidebar {
-            width: 280px;
-            height: 100vh;
-            overflow-y: auto;
-            background: #f8f9fa;
-            border-right: 1px solid #dee2e6;
-            padding: 10px;
-            box-sizing: border-box;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            font-size: 14px;
-        }
-        #sidebar h3 { margin: 0 0 10px 0; padding-bottom: 10px; border-bottom: 1px solid #dee2e6; }
-        .track-item { display: flex; align-items: center; padding: 8px; margin: 4px 0; background: white; border-radius: 4px; cursor: pointer; }
-        .track-item:hover { background: #e9ecef; }
-        .track-item input { margin-right: 10px; }
-        .track-color { width: 12px; height: 12px; border-radius: 2px; margin-right: 8px; flex-shrink: 0; }
-        .track-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        #map { flex: 1; height: 100vh; }
-        .controls { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #dee2e6; }
-        .controls button { padding: 5px 10px; margin-right: 5px; cursor: pointer; }
-    </style>
+  <title>Strava GPX Map</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      display: flex;
+    }
+
+    #sidebar {
+      width: 300px;
+      height: 100vh;
+      overflow-y: auto;
+      background: #f8f9fa;
+      border-right: 1px solid #dee2e6;
+      padding: 10px;
+      box-sizing: border-box;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+    }
+
+    #sidebar h3 {
+      margin: 0 0 10px 0;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #dee2e6;
+    }
+
+    .track-item {
+      display: flex;
+      align-items: center;
+      padding: 8px;
+      margin: 4px 0;
+      background: white;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .track-item:hover {
+      background: #e9ecef;
+    }
+
+    .track-item input {
+      margin-right: 10px;
+      flex-shrink: 0;
+    }
+
+    .track-color {
+      width: 12px;
+      height: 12px;
+      border-radius: 2px;
+      margin-right: 8px;
+      flex-shrink: 0;
+    }
+
+    .track-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+
+    .track-distance {
+      color: #666;
+      margin-left: 8px;
+      white-space: nowrap;
+      font-size: 12px;
+    }
+
+    #map {
+      flex: 1;
+      height: 100vh;
+    }
+
+    .controls {
+      margin-bottom: 10px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #dee2e6;
+    }
+
+    .controls button {
+      padding: 5px 10px;
+      margin-right: 5px;
+      cursor: pointer;
+    }
+
+    .tile-controls {
+      margin-bottom: 10px;
+      padding: 10px;
+      background: white;
+      border-radius: 4px;
+    }
+
+    .tile-controls label {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+    }
+
+    .tile-controls input {
+      margin-right: 8px;
+    }
+
+    .tile-stats {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #666;
+    }
+
+    .tile-stats .count {
+      font-weight: bold;
+      color: #333;
+      font-size: 16px;
+    }
+  </style>
 </head>
+
 <body>
-    <div id="sidebar">
-        <h3>GPX Tracks</h3>
-        <div class="controls">
-            <button onclick="toggleAll(true)">Alle an</button>
-            <button onclick="toggleAll(false)">Alle aus</button>
-        </div>
-        <div id="track-list"></div>
+  <div id="sidebar">
+    <h3>GPX Tracks</h3>
+    <div class="tile-controls">
+      <label>
+        <input type="checkbox" id="show-tiles" checked>
+        Besuchte Tiles anzeigen
+      </label>
+      <div class="tile-stats">
+        <span class="count" id="tile-count">-</span> Tiles besucht (Zoom 14)
+      </div>
     </div>
-    <div id="map"></div>
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script>
-        const map = L.map('map').setView([51.25, 12.14], 13);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '&copy; OpenStreetMap contributors'
-        }).addTo(map);
+    <div class="controls">
+      <button onclick="toggleAll(true)">Alle an</button>
+      <button onclick="toggleAll(false)">Alle aus</button>
+    </div>
+    <div id="track-list"></div>
+  </div>
+  <div id="map"></div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([51.25, 12.14], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
 
-        const tracks = {};
+    const tracks = {};
+    const tilesLayer = L.layerGroup().addTo(map);
+    let tilesVisible = true;
 
-        // Generate color gradient from red (newest) to green (oldest)
-        function getGradientColor(index, total) {
-            if (total <= 1) return '#e6194b'; // red for single track
-            const ratio = index / (total - 1);
-            // Red: rgb(230, 25, 75) -> Green: rgb(60, 180, 75)
-            const r = Math.round(230 - ratio * 170);
-            const g = Math.round(25 + ratio * 155);
-            const b = Math.round(75);
-            return `rgb(${r}, ${g}, ${b})`;
-        }
+    // Convert tile coordinates to lat/lon bounds
+    function tileToLatLngBounds(x, y, z) {
+      const n = Math.pow(2, z);
+      const lonMin = x / n * 360.0 - 180.0;
+      const lonMax = (x + 1) / n * 360.0 - 180.0;
+      const latMax = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n))) * 180.0 / Math.PI;
+      const latMin = Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + 1) / n))) * 180.0 / Math.PI;
+      return L.latLngBounds([latMin, lonMin], [latMax, lonMax]);
+    }
 
-        function formatDate(timestamp) {
-            const date = new Date(timestamp * 1000);
-            return date.toLocaleDateString('de-DE', { 
-                day: '2-digit', 
-                month: '2-digit', 
-                year: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit'
-            });
-        }
-
-        function updateBounds() {
-            const visibleBounds = [];
-            Object.values(tracks).forEach(t => {
-                if (t.visible && t.polyline) visibleBounds.push(t.polyline.getBounds());
-            });
-            if (visibleBounds.length > 0) {
-                let bounds = visibleBounds[0];
-                visibleBounds.slice(1).forEach(b => bounds.extend(b));
-                map.fitBounds(bounds);
-            }
-        }
-
-        function toggleTrack(file, visible) {
-            const track = tracks[file];
-            if (!track || !track.polyline) return;
-            track.visible = visible;
-            if (visible) { track.polyline.addTo(map); } else { track.polyline.remove(); }
-        }
-
-        function toggleAll(visible) {
-            Object.keys(tracks).forEach(file => {
-                const checkbox = document.getElementById('chk-' + file);
-                if (checkbox) checkbox.checked = visible;
-                toggleTrack(file, visible);
-            });
-        }
-
-        fetch('/gpx').then(r => r.json()).then(files => {
-            const listEl = document.getElementById('track-list');
-            const total = files.length;
-            
-            files.forEach((fileInfo, index) => {
-                const file = fileInfo.filename;
-                const color = getGradientColor(index, total);
-                tracks[file] = { color: color, polyline: null, visible: true };
-                
-                const item = document.createElement('label');
-                item.className = 'track-item';
-                const dateStr = formatDate(fileInfo.modified);
-                item.innerHTML = '<input type="checkbox" id="chk-' + file + '" checked><span class="track-color" style="background:' + color + '"></span><span class="track-name">' + dateStr + '</span>';
-                item.querySelector('input').addEventListener('change', (e) => toggleTrack(file, e.target.checked));
-                listEl.appendChild(item);
-                
-                fetch('/gpx/' + file).then(r => r.text()).then(gpxData => {
-                    const parser = new DOMParser();
-                    const gpx = parser.parseFromString(gpxData, 'text/xml');
-                    const trkpts = gpx.querySelectorAll('trkpt');
-                    if (trkpts.length === 0) return;
-                    const latlngs = [];
-                    trkpts.forEach(pt => {
-                        const lat = parseFloat(pt.getAttribute('lat'));
-                        const lon = parseFloat(pt.getAttribute('lon'));
-                        if (!isNaN(lat) && !isNaN(lon)) latlngs.push([lat, lon]);
-                    });
-                    if (latlngs.length > 0) {
-                        const polyline = L.polyline(latlngs, { color: color, weight: 3, opacity: 0.8 }).addTo(map);
-                        tracks[file].polyline = polyline;
-                        updateBounds();
-                    }
-                });
-            });
+    // Load and display visited tiles
+    function loadTiles() {
+      fetch('/tiles').then(r => r.json()).then(data => {
+        document.getElementById('tile-count').textContent = data.total_count;
+        
+        data.tiles.forEach(tile => {
+          const bounds = tileToLatLngBounds(tile.x, tile.y, tile.z);
+          const rect = L.rectangle(bounds, {
+            color: '#3388ff',
+            weight: 1,
+            fillColor: '#3388ff',
+            fillOpacity: 0.3,
+            interactive: false
+          });
+          tilesLayer.addLayer(rect);
         });
-    </script>
+      });
+    }
+
+    // Toggle tiles visibility
+    document.getElementById('show-tiles').addEventListener('change', (e) => {
+      tilesVisible = e.target.checked;
+      if (tilesVisible) {
+        tilesLayer.addTo(map);
+      } else {
+        tilesLayer.remove();
+      }
+    });
+
+    // Load tiles on startup
+    loadTiles();
+
+    // Generate color gradient from red (newest) to green (oldest)
+    function getGradientColor(index, total) {
+      if (total <= 1) return '#e6194b'; // red for single track
+      const ratio = index / (total - 1);
+      // Red: rgb(230, 25, 75) -> Green: rgb(60, 180, 75)
+      const r = Math.round(230 - ratio * 170);
+      const g = Math.round(25 + ratio * 155);
+      const b = Math.round(75);
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+
+    function formatDate(timestamp) {
+      const date = new Date(timestamp * 1000);
+      return date.toLocaleDateString('de-DE', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    }
+
+    function updateBounds() {
+      const visibleBounds = [];
+      Object.values(tracks).forEach(t => {
+        if (t.visible && t.polyline) visibleBounds.push(t.polyline.getBounds());
+      });
+      if (visibleBounds.length > 0) {
+        let bounds = visibleBounds[0];
+        visibleBounds.slice(1).forEach(b => bounds.extend(b));
+        map.fitBounds(bounds);
+      }
+    }
+
+    function toggleTrack(file, visible) {
+      const track = tracks[file];
+      if (!track || !track.polyline) return;
+      track.visible = visible;
+      if (visible) { track.polyline.addTo(map); } else { track.polyline.remove(); }
+    }
+
+    function toggleAll(visible) {
+      Object.keys(tracks).forEach(file => {
+        const checkbox = document.getElementById('chk-' + file);
+        if (checkbox) checkbox.checked = visible;
+        toggleTrack(file, visible);
+      });
+    }
+
+    fetch('/gpx').then(r => r.json()).then(files => {
+      const listEl = document.getElementById('track-list');
+      const total = files.length;
+
+      files.forEach((fileInfo, index) => {
+        const file = fileInfo.filename;
+        const color = getGradientColor(index, total);
+        tracks[file] = { color: color, polyline: null, visible: true };
+
+        const item = document.createElement('label');
+        item.className = 'track-item';
+        const dateStr = formatDate(fileInfo.modified);
+        const distStr = fileInfo.distance_km.toFixed(2) + ' km';
+        item.innerHTML = '<input type="checkbox" id="chk-' + file + '" checked><span class="track-color" style="background:' + color + '"></span><span class="track-name">' + dateStr + '</span><span class="track-distance">' + distStr + '</span>';
+        item.querySelector('input').addEventListener('change', (e) => toggleTrack(file, e.target.checked));
+        listEl.appendChild(item);
+
+        fetch('/gpx/' + file).then(r => r.text()).then(gpxData => {
+          const parser = new DOMParser();
+          const gpx = parser.parseFromString(gpxData, 'text/xml');
+          const trkpts = gpx.querySelectorAll('trkpt');
+          if (trkpts.length === 0) return;
+          const latlngs = [];
+          trkpts.forEach(pt => {
+            const lat = parseFloat(pt.getAttribute('lat'));
+            const lon = parseFloat(pt.getAttribute('lon'));
+            if (!isNaN(lat) && !isNaN(lon)) latlngs.push([lat, lon]);
+          });
+          if (latlngs.length > 0) {
+            const polyline = L.polyline(latlngs, { color: color, weight: 3, opacity: 0.8 }).addTo(map);
+            tracks[file].polyline = polyline;
+            updateBounds();
+          }
+        });
+      });
+    });
+  </script>
 </body>
+
 </html>

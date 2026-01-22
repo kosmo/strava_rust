@@ -1,4 +1,5 @@
 use axum::{extract::Query, extract::State, routing::get, Router};
+use chrono::{DateTime, Duration, Utc};
 use clap::Parser;
 use dotenvy::dotenv;
 use reqwest::header::{AUTHORIZATION, USER_AGENT};
@@ -12,6 +13,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 mod map_server;
+mod tiles;
 
 #[derive(Debug, Deserialize)]
 struct Athlete {
@@ -54,6 +56,7 @@ struct TokenResponse {
 struct ActivitySummary {
     id: i64,
     name: Option<String>,
+    start_date: Option<String>, // ISO 8601 format: "2024-01-15T10:30:00Z"
 }
 
 #[derive(Debug, Deserialize)]
@@ -340,7 +343,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Build GPX content
         let file_path = out_dir.join(format!("activity_{}.gpx", id));
-        let gpx = build_gpx_xml(name, &streams);
+        let start_date = act.start_date.as_deref();
+        let gpx = build_gpx_xml(name, start_date, &streams);
         fs::write(&file_path, gpx)?;
         println!("Saved GPX: {}", file_path.display());
     }
@@ -348,12 +352,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// ...existing code (build_gpx_xml, xml_escape functions - keep these)...
-
-fn build_gpx_xml(name: &str, streams: &StreamSet) -> String {
+fn build_gpx_xml(name: &str, start_date: Option<&str>, streams: &StreamSet) -> String {
     let mut xml = String::new();
     xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     xml.push_str("<gpx version=\"1.1\" creator=\"rust-strava-example\" xmlns=\"http://www.topografix.com/GPX/1/1\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd\">\n");
+
+    // Parse start_date for calculating trackpoint times
+    let start_time: Option<DateTime<Utc>> = start_date.and_then(|d| d.parse().ok());
+
+    // Add metadata with time if available
+    if let Some(date) = start_date {
+        xml.push_str("  <metadata>\n");
+        xml.push_str(&format!("    <time>{}</time>\n", xml_escape(date)));
+        xml.push_str("  </metadata>\n");
+    }
+
     xml.push_str(&format!(
         "  <trk>\n    <name>{}</name>\n    <trkseg>\n",
         xml_escape(name)
@@ -372,12 +385,24 @@ fn build_gpx_xml(name: &str, streams: &StreamSet) -> String {
             .as_ref()
             .and_then(|v| v.data.get(i))
             .copied();
+        // Calculate absolute time for this trackpoint
+        let point_time: Option<DateTime<Utc>> = start_time.and_then(|st| {
+            streams
+                .time
+                .as_ref()
+                .and_then(|t| t.data.get(i))
+                .map(|&secs| st + Duration::seconds(secs))
+        });
+
         xml.push_str(&format!(
             "      <trkpt lat=\"{:.7}\" lon=\"{:.7}\">\n",
             lat, lon
         ));
         if let Some(e) = ele {
             xml.push_str(&format!("        <ele>{:.2}</ele>\n", e));
+        }
+        if let Some(t) = point_time {
+            xml.push_str(&format!("        <time>{}</time>\n", t.to_rfc3339()));
         }
         xml.push_str("      </trkpt>\n");
     }
