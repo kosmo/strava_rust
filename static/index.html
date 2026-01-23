@@ -117,6 +117,13 @@
       color: #333;
       font-size: 16px;
     }
+
+    .gemeinde-tooltip {
+      font-size: 13px;
+    }
+    .gemeinde-tooltip b {
+      font-size: 14px;
+    }
   </style>
 </head>
 
@@ -127,6 +134,10 @@
       <label>
         <input type="checkbox" id="show-tiles" checked>
         Besuchte Tiles anzeigen
+      </label>
+      <label>
+        <input type="checkbox" id="show-gemeinden" checked>
+        Gemeindegrenzen anzeigen
       </label>
       <div class="tile-stats">
         <span class="count" id="tile-count">-</span> Tiles besucht (Zoom 14)
@@ -146,8 +157,16 @@
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
+    // Create custom panes for z-ordering: gemeinden below tiles
+    map.createPane('gemeindenPane');
+    map.getPane('gemeindenPane').style.zIndex = 400;
+    
+    map.createPane('tilesPane');
+    map.getPane('tilesPane').style.zIndex = 450;
+
     const tracks = {};
     const tilesLayer = L.layerGroup().addTo(map);
+    const gemeindenLayer = L.layerGroup().addTo(map);
     let tilesVisible = true;
 
     // Convert tile coordinates to lat/lon bounds
@@ -175,16 +194,43 @@
       });
     }
 
+    // Get color based on how recent the tile was visited
+    // Newest = dark green, oldest = light green/yellow
+    function getTileColor(timestamp, minTime, maxTime) {
+      if (!timestamp || timestamp === 0 || minTime === maxTime) {
+        return '#90EE90'; // Light green for unknown dates
+      }
+
+      // Calculate ratio: 1 = newest, 0 = oldest
+      const ratio = (timestamp - minTime) / (maxTime - minTime);
+
+      // Gradient from light green (oldest) to dark green (newest)
+      // Light green: rgb(144, 238, 144) -> Dark green: rgb(34, 139, 34)
+      const r = Math.round(144 - ratio * 110);
+      const g = Math.round(238 - ratio * 99);
+      const b = Math.round(144 - ratio * 110);
+
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+
     // Load and display visited tiles
     function loadTiles() {
       fetch('/tiles').then(r => r.json()).then(data => {
         document.getElementById('tile-count').textContent = data.total_count;
+
+        // Find min and max timestamps for color scaling
+        const timestamps = data.tiles
+          .map(t => t.first_visited_at)
+          .filter(t => t && t > 0);
+        const minTime = Math.min(...timestamps);
+        const maxTime = Math.max(...timestamps);
 
         data.tiles.forEach(tile => {
           const bounds = tileToLatLngBounds(tile.x, tile.y, tile.z);
           const dateStr = formatTileDate(tile.first_visited_at);
           const title = tile.activity_title || 'Unbekannt';
           const activityId = tile.activity_id || '';
+          const tileColor = getTileColor(tile.first_visited_at, minTime, maxTime);
 
           let tooltipContent = `<b>${title}</b><br>`;
           tooltipContent += `Erste Durchfahrt: ${dateStr}`;
@@ -193,10 +239,10 @@
           }
 
           const rect = L.rectangle(bounds, {
-            color: '#3388ff',
+            color: tileColor,
             weight: 1,
-            fillColor: '#3388ff',
-            fillOpacity: 0.3,
+            fillColor: tileColor,
+            fillOpacity: 0.5,
             interactive: true
           });
           rect.bindTooltip(tooltipContent, {
@@ -217,6 +263,292 @@
         tilesLayer.remove();
       }
     });
+
+    // Toggle Gemeinden visibility
+    let gemeindenVisible = true;
+    document.getElementById('show-gemeinden').addEventListener('change', (e) => {
+      gemeindenVisible = e.target.checked;
+      if (gemeindenVisible) {
+        gemeindenLayer.addTo(map);
+      } else {
+        gemeindenLayer.remove();
+      }
+    });
+
+    // Store tiles globally for gemeinde calculation
+    let allTiles = [];
+    const TILE_ZOOM = 14;
+
+    // Convert lat/lon to tile coordinates
+    function latLonToTile(lat, lon, zoom) {
+      const n = Math.pow(2, zoom);
+      const x = Math.floor((lon + 180.0) / 360.0 * n);
+      const latRad = lat * Math.PI / 180.0;
+      const y = Math.floor((1.0 - Math.asinh(Math.tan(latRad)) / Math.PI) / 2.0 * n);
+      return { x, y };
+    }
+
+    // Get tile center coordinates
+    function tileCenterToLatLon(x, y, zoom) {
+      const n = Math.pow(2, zoom);
+      const lon = (x + 0.5) / n * 360.0 - 180.0;
+      const latRad = Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + 0.5) / n)));
+      const lat = latRad * 180.0 / Math.PI;
+      return [lat, lon];
+    }
+
+    // Check if a point is inside a polygon
+    function pointInPolygon(point, polygon) {
+      const x = point[1], y = point[0]; // lon, lat
+      let inside = false;
+      
+      for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        const xi = polygon[i][0], yi = polygon[i][1];
+        const xj = polygon[j][0], yj = polygon[j][1];
+        
+        if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+          inside = !inside;
+        }
+      }
+      return inside;
+    }
+
+    // Check if a point is in any polygon of a MultiPolygon or Polygon
+    function pointInGeometry(point, geometry) {
+      if (geometry.type === 'Polygon') {
+        return pointInPolygon(point, geometry.coordinates[0]);
+      } else if (geometry.type === 'MultiPolygon') {
+        for (const poly of geometry.coordinates) {
+          if (pointInPolygon(point, poly[0])) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    // Get all tiles that fall within a geometry's bounding box, then filter
+    function getTilesInGeometry(geometry, visitedTileSet) {
+      // Get bounding box
+      let minLat = Infinity, maxLat = -Infinity;
+      let minLon = Infinity, maxLon = -Infinity;
+      
+      const coords = geometry.type === 'Polygon' 
+        ? [geometry.coordinates]
+        : geometry.coordinates;
+      
+      for (const poly of coords) {
+        for (const ring of poly) {
+          for (const [lon, lat] of ring) {
+            minLat = Math.min(minLat, lat);
+            maxLat = Math.max(maxLat, lat);
+            minLon = Math.min(minLon, lon);
+            maxLon = Math.max(maxLon, lon);
+          }
+        }
+      }
+
+      // Get tile range for bounding box
+      const topLeft = latLonToTile(maxLat, minLon, TILE_ZOOM);
+      const bottomRight = latLonToTile(minLat, maxLon, TILE_ZOOM);
+      
+      let totalTiles = 0;
+      let visitedTiles = 0;
+      
+      // Check each tile in the bounding box
+      for (let x = topLeft.x; x <= bottomRight.x; x++) {
+        for (let y = topLeft.y; y <= bottomRight.y; y++) {
+          const center = tileCenterToLatLon(x, y, TILE_ZOOM);
+          if (pointInGeometry(center, geometry)) {
+            totalTiles++;
+            if (visitedTileSet.has(`${x},${y}`)) {
+              visitedTiles++;
+            }
+          }
+        }
+      }
+      
+      return { totalTiles, visitedTiles };
+    }
+
+    // Store gemeinden data globally for tile lookups
+    let gemeindenData = [];
+
+    // Load Gemeinden and calculate statistics
+    function loadGemeinden() {
+      // First, create a set of visited tiles for fast lookup
+      const visitedTileSet = new Set(allTiles.map(t => `${t.x},${t.y}`));
+      
+      fetch('/gemeinden.geojson')
+        .then(r => r.json())
+        .then(geojson => {
+          // Filter to only show "Gemeinde" features (not Bundesland, Kreis, etc.)
+          const gemeinden = geojson.features.filter(f => 
+            f.properties.Art === 'Gemeinde' || 
+            f.properties.Art === 'Stadt' ||
+            f.properties.Art === 'Kreisfreie Stadt'
+          );
+          
+          gemeinden.forEach(feature => {
+            const stats = getTilesInGeometry(feature.geometry, visitedTileSet);
+            const name = feature.properties.Name || 'Unbekannt';
+            const percent = stats.totalTiles > 0 
+              ? Math.round(stats.visitedTiles / stats.totalTiles * 100) 
+              : 0;
+            
+            // Store gemeinde data for tile tooltip lookup
+            gemeindenData.push({
+              name: name,
+              geometry: feature.geometry,
+              stats: stats,
+              percent: percent
+            });
+            
+            // Render gemeinde borders with interactivity for areas without tiles
+            const layer = L.geoJSON(feature, {
+              pane: 'gemeindenPane',
+              style: {
+                color: '#000000',
+                weight: 2,
+                fillColor: 'transparent',
+                fillOpacity: 0,
+                interactive: true
+              }
+            });
+            
+            // Add tooltip for gemeinde (shown when hovering outside tiles)
+            let tooltipContent = `<div class="gemeinde-tooltip">`;
+            tooltipContent += `<b>${name}</b><br>`;
+            tooltipContent += `Tiles: ${stats.visitedTiles} / ${stats.totalTiles}`;
+            if (stats.totalTiles > 0) {
+              tooltipContent += ` (${percent}%)`;
+            }
+            tooltipContent += `</div>`;
+            
+            layer.bindTooltip(tooltipContent, {
+              sticky: true,
+              direction: 'top'
+            });
+            
+            gemeindenLayer.addLayer(layer);
+          });
+          
+          // Now update tile tooltips with gemeinde info
+          updateTileTooltipsWithGemeinden();
+        })
+        .catch(err => console.error('Error loading Gemeinden:', err));
+    }
+
+    // Find which gemeinde a tile belongs to
+    function findGemeindeForTile(tileX, tileY) {
+      const center = tileCenterToLatLon(tileX, tileY, TILE_ZOOM);
+      for (const gemeinde of gemeindenData) {
+        if (pointInGeometry(center, gemeinde.geometry)) {
+          return gemeinde;
+        }
+      }
+      return null;
+    }
+
+    // Update tile tooltips after gemeinden are loaded
+    function updateTileTooltipsWithGemeinden() {
+      // Clear and rebuild tiles layer with gemeinde info
+      tilesLayer.clearLayers();
+      
+      const timestamps = allTiles
+        .map(t => t.first_visited_at)
+        .filter(t => t && t > 0);
+      const minTime = Math.min(...timestamps);
+      const maxTime = Math.max(...timestamps);
+
+      allTiles.forEach(tile => {
+        const bounds = tileToLatLngBounds(tile.x, tile.y, tile.z);
+        const dateStr = formatTileDate(tile.first_visited_at);
+        const title = tile.activity_title || 'Unbekannt';
+        const activityId = tile.activity_id || '';
+        const tileColor = getTileColor(tile.first_visited_at, minTime, maxTime);
+        
+        // Find gemeinde for this tile
+        const gemeinde = findGemeindeForTile(tile.x, tile.y);
+
+        let tooltipContent = `<b>${title}</b><br>`;
+        tooltipContent += `Erste Durchfahrt: ${dateStr}`;
+        if (activityId) {
+          tooltipContent += `<br>ID: ${activityId}`;
+        }
+        
+        // Add gemeinde info if found
+        if (gemeinde) {
+          tooltipContent += `<hr style="margin: 4px 0; border: none; border-top: 1px solid #ccc;">`;
+          tooltipContent += `<b>${gemeinde.name}</b><br>`;
+          tooltipContent += `Tiles: ${gemeinde.stats.visitedTiles} / ${gemeinde.stats.totalTiles}`;
+          if (gemeinde.stats.totalTiles > 0) {
+            tooltipContent += ` (${gemeinde.percent}%)`;
+          }
+        }
+
+        const rect = L.rectangle(bounds, {
+          pane: 'tilesPane',
+          color: tileColor,
+          weight: 1,
+          fillColor: tileColor,
+          fillOpacity: 0.5,
+          interactive: true
+        });
+        rect.bindTooltip(tooltipContent, {
+          sticky: true,
+          direction: 'top'
+        });
+        tilesLayer.addLayer(rect);
+      });
+    }
+
+    // Modified loadTiles to also trigger Gemeinden loading
+    const originalLoadTiles = loadTiles;
+    loadTiles = function() {
+      fetch('/tiles').then(r => r.json()).then(data => {
+        document.getElementById('tile-count').textContent = data.total_count;
+        allTiles = data.tiles; // Store for gemeinde calculation
+
+        // Find min and max timestamps for color scaling
+        const timestamps = data.tiles
+          .map(t => t.first_visited_at)
+          .filter(t => t && t > 0);
+        const minTime = Math.min(...timestamps);
+        const maxTime = Math.max(...timestamps);
+
+        data.tiles.forEach(tile => {
+          const bounds = tileToLatLngBounds(tile.x, tile.y, tile.z);
+          const dateStr = formatTileDate(tile.first_visited_at);
+          const title = tile.activity_title || 'Unbekannt';
+          const activityId = tile.activity_id || '';
+          const tileColor = getTileColor(tile.first_visited_at, minTime, maxTime);
+
+          let tooltipContent = `<b>${title}</b><br>`;
+          tooltipContent += `Erste Durchfahrt: ${dateStr}`;
+          if (activityId) {
+            tooltipContent += `<br>ID: ${activityId}`;
+          }
+
+          const rect = L.rectangle(bounds, {
+            pane: 'tilesPane',
+            color: tileColor,
+            weight: 1,
+            fillColor: tileColor,
+            fillOpacity: 0.5,
+            interactive: true
+          });
+          rect.bindTooltip(tooltipContent, {
+            sticky: true,
+            direction: 'top'
+          });
+          tilesLayer.addLayer(rect);
+        });
+
+        // Now load Gemeinden with tile data available
+        loadGemeinden();
+      });
+    };
 
     // Load tiles on startup
     loadTiles();

@@ -1,5 +1,6 @@
 use axum::{
-    extract::Path as AxumPath, extract::State, http::header, response::IntoResponse, routing::get, Json, Router,
+    extract::Path as AxumPath, extract::State, http::header, response::IntoResponse, routing::get,
+    Json, Router,
 };
 use rusqlite::Connection;
 use serde::Serialize;
@@ -26,26 +27,27 @@ struct GpxFileInfo {
 pub async fn serve_map_server() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize database
     let mut conn = database::init_db()?;
-    
+
     // Process any new GPX files on startup
     println!("Processing GPX files...");
     let new_tiles = tiles::process_all_gpx_files(&mut conn)?;
     if new_tiles > 0 {
         println!("Added {} new tile entries", new_tiles);
     }
-    
+
     let total_tiles = database::get_tile_count(&conn)?;
     println!("Total tiles in database: {}", total_tiles);
-    
+
     let state = AppState {
         db: Arc::new(Mutex::new(conn)),
     };
-    
+
     let app = Router::new()
         .route("/", get(serve_map_html))
         .route("/gpx", get(list_gpx_files))
         .route("/gpx/:filename", get(serve_gpx_file))
         .route("/tiles", get(list_visited_tiles))
+        .route("/gemeinden.geojson", get(serve_gemeinden_geojson))
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
@@ -66,6 +68,22 @@ async fn serve_map_html() -> impl IntoResponse {
             axum::http::StatusCode::NOT_FOUND,
             [(header::CONTENT_TYPE, "text/plain")],
             "index.html not found".to_string(),
+        ),
+    }
+}
+
+async fn serve_gemeinden_geojson() -> impl IntoResponse {
+    let path = PathBuf::from("static/gemeinden.geojson");
+    match fs::read_to_string(&path) {
+        Ok(content) => (
+            axum::http::StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/geo+json")],
+            content,
+        ),
+        Err(_) => (
+            axum::http::StatusCode::NOT_FOUND,
+            [(header::CONTENT_TYPE, "text/plain")],
+            "gemeinden.geojson not found".to_string(),
         ),
     }
 }
