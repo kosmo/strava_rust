@@ -125,12 +125,96 @@
     .gemeinde-tooltip b {
       font-size: 14px;
     }
+
+    .import-controls {
+      margin-bottom: 10px;
+      padding: 10px;
+      background: #e8f4e8;
+      border-radius: 4px;
+      border: 1px solid #c3e6c3;
+    }
+
+    .import-controls h4 {
+      margin: 0 0 8px 0;
+      font-size: 14px;
+    }
+
+    .import-controls button {
+      width: 100%;
+      padding: 8px 12px;
+      background: #28a745;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      margin-bottom: 8px;
+    }
+
+    .import-controls button:hover {
+      background: #218838;
+    }
+
+    .import-controls button:disabled {
+      background: #6c757d;
+      cursor: not-allowed;
+    }
+
+    .import-controls label {
+      display: flex;
+      align-items: center;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .import-controls input {
+      margin-right: 8px;
+    }
+
+    .import-status {
+      margin-top: 8px;
+      padding: 6px;
+      border-radius: 4px;
+      font-size: 12px;
+      display: none;
+    }
+
+    .import-status.success {
+      background: #d4edda;
+      color: #155724;
+      display: block;
+    }
+
+    .import-status.error {
+      background: #f8d7da;
+      color: #721c24;
+      display: block;
+    }
+
+    .import-status.loading {
+      background: #fff3cd;
+      color: #856404;
+      display: block;
+    }
   </style>
 </head>
 
 <body>
   <div id="sidebar">
     <h3>GPX Tracks</h3>
+    <div class="import-controls">
+      <h4>📥 Strava Import</h4>
+      <div id="auth-section">
+        <button id="auth-btn" onclick="startAuth()" style="background: #fc4c02;">Bei Strava anmelden</button>
+        <div id="auth-status" style="font-size: 12px; margin-top: 5px; color: #666;"></div>
+      </div>
+      <button id="import-btn" onclick="fetchActivities()">Neue Aktivitäten abrufen</button>
+      <label>
+        <input type="checkbox" id="fetch-all">
+        Alle abrufen (auch bereits importierte)
+      </label>
+      <div id="import-status" class="import-status"></div>
+    </div>
     <div class="tile-controls">
       <label>
         <input type="checkbox" id="show-tiles" checked>
@@ -719,6 +803,129 @@
         if (checkbox) checkbox.checked = visible;
         toggleTrack(file, visible);
       });
+    }
+
+    // Check authentication status on load
+    async function checkAuthStatus() {
+      try {
+        const response = await fetch('/auth/status');
+        const result = await response.json();
+        const authStatus = document.getElementById('auth-status');
+        const authBtn = document.getElementById('auth-btn');
+        
+        if (result.authenticated) {
+          authStatus.textContent = '✅ Authentifiziert';
+          authStatus.style.color = '#28a745';
+          authBtn.style.display = 'none';
+        } else {
+          authStatus.textContent = 'Nicht angemeldet';
+          authStatus.style.color = '#666';
+        }
+      } catch (e) {
+        console.error('Auth status check failed:', e);
+      }
+    }
+
+    // Start Strava OAuth
+    async function startAuth() {
+      const authBtn = document.getElementById('auth-btn');
+      const authStatus = document.getElementById('auth-status');
+      
+      authBtn.disabled = true;
+      authStatus.textContent = 'Starte Authentifizierung...';
+      
+      try {
+        const response = await fetch('/auth/start');
+        const result = await response.json();
+        
+        if (result.success && result.auth_url) {
+          // Open Strava auth in new window
+          const authWindow = window.open(result.auth_url, 'strava-auth', 'width=600,height=700');
+          authStatus.textContent = 'Bitte im Popup-Fenster anmelden...';
+          
+          // Listen for success message from popup
+          window.addEventListener('message', function handler(event) {
+            if (event.data && event.data.type === 'strava-auth-success') {
+              window.removeEventListener('message', handler);
+              authStatus.textContent = '✅ Erfolgreich authentifiziert!';
+              authStatus.style.color = '#28a745';
+              authBtn.style.display = 'none';
+            }
+          });
+          
+          // Also poll for status in case postMessage doesn't work
+          const pollInterval = setInterval(async () => {
+            try {
+              const statusResp = await fetch('/auth/status');
+              const status = await statusResp.json();
+              if (status.authenticated) {
+                clearInterval(pollInterval);
+                authStatus.textContent = '✅ Erfolgreich authentifiziert!';
+                authStatus.style.color = '#28a745';
+                authBtn.style.display = 'none';
+              }
+            } catch (e) {}
+          }, 2000);
+          
+          // Stop polling after 2 minutes
+          setTimeout(() => clearInterval(pollInterval), 120000);
+        } else {
+          authStatus.textContent = result.message || 'Fehler beim Starten der Authentifizierung';
+          authStatus.style.color = '#dc3545';
+        }
+      } catch (error) {
+        authStatus.textContent = 'Fehler: ' + error.message;
+        authStatus.style.color = '#dc3545';
+      } finally {
+        authBtn.disabled = false;
+      }
+    }
+
+    // Check auth status on page load
+    checkAuthStatus();
+
+    // Fetch activities from Strava
+    async function fetchActivities() {
+      const btn = document.getElementById('import-btn');
+      const status = document.getElementById('import-status');
+      const fetchAll = document.getElementById('fetch-all').checked;
+
+      btn.disabled = true;
+      btn.textContent = 'Wird abgerufen...';
+      status.className = 'import-status loading';
+      status.textContent = 'Verbinde mit Strava...';
+
+      try {
+        const response = await fetch('/fetch-activities', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fetch_all: fetchAll, per_page: 50, page: 1 })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          status.className = 'import-status success';
+          status.textContent = result.message;
+
+          // Reload the page to show new tracks and tiles
+          if (result.imported > 0) {
+            setTimeout(() => {
+              status.textContent = result.message + ' – Seite wird neu geladen...';
+              window.location.reload();
+            }, 1500);
+          }
+        } else {
+          status.className = 'import-status error';
+          status.textContent = result.message;
+        }
+      } catch (error) {
+        status.className = 'import-status error';
+        status.textContent = 'Fehler: ' + error.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Neue Aktivitäten abrufen';
+      }
     }
 
     fetch('/gpx').then(r => r.json()).then(files => {

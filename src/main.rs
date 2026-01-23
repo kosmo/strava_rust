@@ -213,14 +213,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Export activities as GPX files
     let out_dir = PathBuf::from("gpx");
-    strava::export_activities_as_gpx(
+    if let Err(e) = strava::export_activities_as_gpx(
         &client,
         &token_value,
         &activities,
         &out_dir,
         db_conn.as_ref(),
         args.fetch_all,
-    ).await?;
+    ).await {
+        eprintln!("Export failed: {}", e);
+    }
 
     Ok(())
 }

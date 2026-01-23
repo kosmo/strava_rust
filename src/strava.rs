@@ -59,7 +59,7 @@ pub async fn exchange_code(
     client_id: &str,
     client_secret: &str,
     code: &str,
-) -> Result<TokenResponse, Box<dyn std::error::Error>> {
+) -> Result<TokenResponse, Box<dyn std::error::Error + Send + Sync>> {
     let resp = client
         .post("https://www.strava.com/oauth/token")
         .form(&serde_json::json!({
@@ -81,6 +81,34 @@ pub async fn exchange_code(
     Ok(token)
 }
 
+/// Refresh an expired access token using a refresh token
+pub async fn refresh_token(
+    client: &reqwest::Client,
+    client_id: &str,
+    client_secret: &str,
+    refresh_token: &str,
+) -> Result<TokenResponse, Box<dyn std::error::Error + Send + Sync>> {
+    let resp = client
+        .post("https://www.strava.com/oauth/token")
+        .form(&serde_json::json!({
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        }))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Token refresh failed: status={} body={}", status, body).into());
+    }
+
+    let token: TokenResponse = resp.json().await?;
+    Ok(token)
+}
+
 /// Get the OAuth authorization URL
 pub fn get_authorize_url(client_id: &str, redirect_uri: &str) -> String {
     format!(
@@ -93,7 +121,7 @@ pub fn get_authorize_url(client_id: &str, redirect_uri: &str) -> String {
 pub async fn get_athlete(
     client: &reqwest::Client,
     access_token: &str,
-) -> Result<Athlete, Box<dyn std::error::Error>> {
+) -> Result<Athlete, Box<dyn std::error::Error + Send + Sync>> {
     let resp = client
         .get("https://www.strava.com/api/v3/athlete")
         .header(AUTHORIZATION, format!("Bearer {}", access_token))
@@ -120,7 +148,7 @@ pub async fn get_activities(
     access_token: &str,
     per_page: u32,
     page: u32,
-) -> Result<Vec<ActivitySummary>, Box<dyn std::error::Error>> {
+) -> Result<Vec<ActivitySummary>, Box<dyn std::error::Error + Send + Sync>> {
     let resp = client
         .get("https://www.strava.com/api/v3/athlete/activities")
         .query(&[("per_page", per_page), ("page", page)])
@@ -154,7 +182,7 @@ pub async fn get_activity_streams(
     client: &reqwest::Client,
     access_token: &str,
     activity_id: i64,
-) -> Result<StreamSet, Box<dyn std::error::Error>> {
+) -> Result<StreamSet, Box<dyn std::error::Error + Send + Sync>> {
     let resp = client
         .get(format!(
             "https://www.strava.com/api/v3/activities/{}/streams",
@@ -187,6 +215,7 @@ pub async fn get_activity_streams(
 
 /// Export activities as GPX files to the specified directory
 /// If fetch_all is false, already imported activities are skipped
+/// Returns (imported_count, skipped_count)
 pub async fn export_activities_as_gpx(
     client: &reqwest::Client,
     access_token: &str,
@@ -194,11 +223,11 @@ pub async fn export_activities_as_gpx(
     out_dir: &PathBuf,
     db_conn: Option<&rusqlite::Connection>,
     fetch_all: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(u32, u32), Box<dyn std::error::Error + Send + Sync>> {
     fs::create_dir_all(out_dir)?;
 
-    let mut imported_count = 0;
-    let mut skipped_count = 0;
+    let mut imported_count: u32 = 0;
+    let mut skipped_count: u32 = 0;
 
     for act in activities.iter() {
         let id = act.id;
@@ -241,7 +270,7 @@ pub async fn export_activities_as_gpx(
     }
 
     println!("\nImport summary: {} imported, {} skipped (already imported)", imported_count, skipped_count);
-    Ok(())
+    Ok((imported_count, skipped_count))
 }
 
 /// Build GPX XML content from activity data and streams

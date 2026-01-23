@@ -1,20 +1,24 @@
 use axum::{
-    extract::Path as AxumPath, extract::State, http::header, response::IntoResponse, routing::get,
+    extract::Path as AxumPath, extract::Query, extract::State, http::header, 
+    response::IntoResponse, routing::{get, post},
     Json, Router,
 };
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::net::TcpListener;
 
 use crate::database;
+use crate::strava;
 use crate::tiles;
 
 #[derive(Clone)]
 struct AppState {
     db: Arc<Mutex<Connection>>,
+    // Store the current access token (refreshed via OAuth)
+    access_token: Arc<RwLock<Option<String>>>,
 }
 
 #[derive(Serialize)]
@@ -40,6 +44,7 @@ pub async fn serve_map_server() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = AppState {
         db: Arc::new(Mutex::new(conn)),
+        access_token: Arc::new(RwLock::new(None)),
     };
 
     let app = Router::new()
@@ -48,6 +53,10 @@ pub async fn serve_map_server() -> Result<(), Box<dyn std::error::Error>> {
         .route("/gpx/:filename", get(serve_gpx_file))
         .route("/tiles", get(list_visited_tiles))
         .route("/gemeinden.geojson", get(serve_gemeinden_geojson))
+        .route("/fetch-activities", post(fetch_activities))
+        .route("/auth/start", get(auth_start))
+        .route("/auth/callback", get(auth_callback))
+        .route("/auth/status", get(auth_status))
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
@@ -262,4 +271,396 @@ async fn serve_gpx_file(AxumPath(filename): AxumPath<String>) -> impl IntoRespon
 async fn list_visited_tiles(State(state): State<AppState>) -> Json<tiles::TilesResponse> {
     let conn = state.db.lock().unwrap();
     Json(tiles::get_visited_tiles(&conn))
+}
+
+#[derive(Deserialize)]
+struct FetchParams {
+    #[serde(default)]
+    fetch_all: bool,
+    #[serde(default = "default_per_page")]
+    per_page: u32,
+    #[serde(default = "default_page")]
+    page: u32,
+}
+
+fn default_per_page() -> u32 { 50 }
+fn default_page() -> u32 { 1 }
+
+#[derive(Serialize)]
+struct FetchResponse {
+    success: bool,
+    message: String,
+    imported: u32,
+    skipped: u32,
+}
+
+async fn fetch_activities(
+    State(state): State<AppState>,
+    Json(params): Json<FetchParams>,
+) -> Json<FetchResponse> {
+    // First, check if we have a token from OAuth in state
+    let state_token = {
+        let token_guard = state.access_token.read().unwrap();
+        token_guard.clone()
+    };
+    
+    // Use state token if available, otherwise fall back to environment
+    let mut access_token = state_token.unwrap_or_else(|| {
+        std::env::var("STRAVA_ACCESS_TOKEN").unwrap_or_default()
+    });
+    let refresh_token = std::env::var("STRAVA_REFRESH_TOKEN").unwrap_or_default();
+    let client_id = std::env::var("STRAVA_CLIENT_ID").unwrap_or_default();
+    let client_secret = std::env::var("STRAVA_CLIENT_SECRET").unwrap_or_default();
+
+    if access_token.is_empty() && refresh_token.is_empty() {
+        return Json(FetchResponse {
+            success: false,
+            message: "Nicht authentifiziert. Bitte zuerst 'Bei Strava anmelden' klicken.".to_string(),
+            imported: 0,
+            skipped: 0,
+        });
+    }
+
+    // Create HTTP client
+    let client = match strava::create_client() {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(FetchResponse {
+                success: false,
+                message: format!("HTTP Client Fehler: {}", e),
+                imported: 0,
+                skipped: 0,
+            });
+        }
+    };
+
+    // Try to fetch activities, refresh token if needed
+    let activities = match strava::get_activities(&client, &access_token, params.per_page, params.page).await {
+        Ok(a) => a,
+        Err(e) => {
+            let error_str = e.to_string();
+            // Check if it's a 401 error and we have a refresh token
+            if error_str.contains("401") && !refresh_token.is_empty() && !client_id.is_empty() && !client_secret.is_empty() {
+                println!("Access token expired, attempting refresh...");
+                
+                // Try to refresh the token
+                match strava::refresh_token(&client, &client_id, &client_secret, &refresh_token).await {
+                    Ok(new_tokens) => {
+                        println!("Token refreshed successfully!");
+                        println!("New access token: {}", new_tokens.access_token);
+                        if let Some(ref rt) = new_tokens.refresh_token {
+                            println!("New refresh token: {}", rt);
+                        }
+                        println!("Please update your .env file with the new tokens.");
+                        
+                        access_token = new_tokens.access_token;
+                        
+                        // Retry with new token
+                        match strava::get_activities(&client, &access_token, params.per_page, params.page).await {
+                            Ok(a) => a,
+                            Err(e2) => {
+                                return Json(FetchResponse {
+                                    success: false,
+                                    message: format!("Strava API Fehler nach Token-Refresh: {}", e2),
+                                    imported: 0,
+                                    skipped: 0,
+                                });
+                            }
+                        }
+                    }
+                    Err(refresh_err) => {
+                        return Json(FetchResponse {
+                            success: false,
+                            message: format!("Token-Refresh fehlgeschlagen: {}. Bitte erneut via CLI authentifizieren.", refresh_err),
+                            imported: 0,
+                            skipped: 0,
+                        });
+                    }
+                }
+            } else {
+                return Json(FetchResponse {
+                    success: false,
+                    message: format!("Strava API Fehler: {}", e),
+                    imported: 0,
+                    skipped: 0,
+                });
+            }
+        }
+    };
+
+    if activities.is_empty() {
+        return Json(FetchResponse {
+            success: true,
+            message: "Keine neuen Aktivitäten gefunden.".to_string(),
+            imported: 0,
+            skipped: 0,
+        });
+    }
+
+    let out_dir = PathBuf::from("gpx");
+
+    // Export activities as GPX - we handle database operations separately
+    // to avoid holding non-Send types across await points
+    let mut imported_count: u32 = 0;
+    let mut skipped_count: u32 = 0;
+
+    // First, check which activities are already imported (using a separate connection)
+    let already_imported: std::collections::HashSet<i64> = if !params.fetch_all {
+        match database::init_db() {
+            Ok(conn) => {
+                database::get_imported_activity_ids(&conn)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect()
+            }
+            Err(_) => std::collections::HashSet::new(),
+        }
+    } else {
+        std::collections::HashSet::new()
+    };
+
+    // Filter activities
+    let activities_to_import: Vec<_> = activities
+        .into_iter()
+        .filter(|act| {
+            if already_imported.contains(&act.id) {
+                skipped_count += 1;
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+
+    if activities_to_import.is_empty() {
+        return Json(FetchResponse {
+            success: true,
+            message: format!("Keine neuen Aktivitäten. {} bereits importiert.", skipped_count),
+            imported: 0,
+            skipped: skipped_count,
+        });
+    }
+
+    // Now export each activity
+    let mut imported_ids: Vec<(i64, Option<String>)> = Vec::new();
+    
+    for act in &activities_to_import {
+        let id = act.id;
+        let name = act.name.as_deref().unwrap_or("");
+        println!("Exporting GPX for activity {} - {}", id, name);
+
+        match strava::get_activity_streams(&client, &access_token, id).await {
+            Ok(streams) => {
+                let file_path = out_dir.join(format!("activity_{}.gpx", id));
+                let start_date = act.start_date.as_deref();
+                let gpx = strava::build_gpx_xml(name, start_date, &streams);
+                if let Err(e) = std::fs::write(&file_path, gpx) {
+                    eprintln!("Failed to write GPX file: {}", e);
+                    continue;
+                }
+                println!("Saved GPX: {}", file_path.display());
+                imported_ids.push((id, act.name.clone()));
+                imported_count += 1;
+            }
+            Err(e) => {
+                eprintln!("Failed to get streams for activity {}: {}", id, e);
+                continue;
+            }
+        }
+    }
+
+    // Mark activities as imported in database (after all awaits are done)
+    if !imported_ids.is_empty() {
+        if let Ok(conn) = database::init_db() {
+            for (id, name) in &imported_ids {
+                if let Err(e) = database::mark_activity_imported(&conn, *id, name.as_deref()) {
+                    eprintln!("Warning: Failed to mark activity {} as imported: {}", id, e);
+                }
+            }
+        }
+    }
+
+    // Process new GPX files to update tiles
+    {
+        let mut conn = state.db.lock().unwrap();
+        if let Err(e) = tiles::process_all_gpx_files(&mut conn) {
+            eprintln!("Fehler beim Verarbeiten der GPX-Dateien: {}", e);
+        }
+    }
+
+    Json(FetchResponse {
+        success: true,
+        message: format!("{} Aktivitäten importiert, {} übersprungen", imported_count, skipped_count),
+        imported: imported_count,
+        skipped: skipped_count,
+    })
+}
+
+// OAuth Authentication Handlers
+
+#[derive(Serialize)]
+struct AuthStartResponse {
+    success: bool,
+    auth_url: Option<String>,
+    message: String,
+}
+
+async fn auth_start() -> Json<AuthStartResponse> {
+    let client_id = std::env::var("STRAVA_CLIENT_ID").unwrap_or_default();
+    
+    if client_id.is_empty() {
+        return Json(AuthStartResponse {
+            success: false,
+            auth_url: None,
+            message: "STRAVA_CLIENT_ID nicht gesetzt.".to_string(),
+        });
+    }
+
+    let redirect_uri = "http://localhost:8080/auth/callback";
+    let auth_url = strava::get_authorize_url(&client_id, redirect_uri);
+    
+    Json(AuthStartResponse {
+        success: true,
+        auth_url: Some(auth_url),
+        message: "Bitte im neuen Fenster bei Strava anmelden.".to_string(),
+    })
+}
+
+#[derive(Deserialize)]
+struct AuthCallbackParams {
+    code: Option<String>,
+    error: Option<String>,
+}
+
+async fn auth_callback(
+    State(state): State<AppState>,
+    Query(params): Query<AuthCallbackParams>,
+) -> impl IntoResponse {
+    if let Some(error) = params.error {
+        return (
+            axum::http::StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            format!(r#"<!DOCTYPE html>
+<html><head><title>Authentifizierung fehlgeschlagen</title></head>
+<body style="font-family: sans-serif; padding: 40px; text-align: center;">
+<h1 style="color: #dc3545;">❌ Fehler</h1>
+<p>{}</p>
+<p><a href="/">Zurück zur Karte</a></p>
+</body></html>"#, error),
+        );
+    }
+
+    let code = match params.code {
+        Some(c) => c,
+        None => {
+            return (
+                axum::http::StatusCode::OK,
+                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                r#"<!DOCTYPE html>
+<html><head><title>Fehler</title></head>
+<body style="font-family: sans-serif; padding: 40px; text-align: center;">
+<h1 style="color: #dc3545;">❌ Fehler</h1>
+<p>Kein Autorisierungscode erhalten.</p>
+<p><a href="/">Zurück zur Karte</a></p>
+</body></html>"#.to_string(),
+            );
+        }
+    };
+
+    let client_id = std::env::var("STRAVA_CLIENT_ID").unwrap_or_default();
+    let client_secret = std::env::var("STRAVA_CLIENT_SECRET").unwrap_or_default();
+
+    if client_id.is_empty() || client_secret.is_empty() {
+        return (
+            axum::http::StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            r#"<!DOCTYPE html>
+<html><head><title>Fehler</title></head>
+<body style="font-family: sans-serif; padding: 40px; text-align: center;">
+<h1 style="color: #dc3545;">❌ Konfigurationsfehler</h1>
+<p>STRAVA_CLIENT_ID oder STRAVA_CLIENT_SECRET nicht gesetzt.</p>
+<p><a href="/">Zurück zur Karte</a></p>
+</body></html>"#.to_string(),
+        );
+    }
+
+    // Exchange code for token
+    let client = match strava::create_client() {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::OK,
+                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                format!(r#"<!DOCTYPE html>
+<html><head><title>Fehler</title></head>
+<body style="font-family: sans-serif; padding: 40px; text-align: center;">
+<h1 style="color: #dc3545;">❌ Fehler</h1>
+<p>HTTP Client konnte nicht erstellt werden: {}</p>
+<p><a href="/">Zurück zur Karte</a></p>
+</body></html>"#, e),
+            );
+        }
+    };
+
+    match strava::exchange_code(&client, &client_id, &client_secret, &code).await {
+        Ok(token) => {
+            // Store the token in state
+            {
+                let mut token_guard = state.access_token.write().unwrap();
+                *token_guard = Some(token.access_token.clone());
+            }
+            
+            println!("OAuth successful! Access token obtained.");
+            if let Some(ref rt) = token.refresh_token {
+                println!("Refresh token: {}", rt);
+                println!("Speichere diesen Refresh Token in deiner .env Datei als STRAVA_REFRESH_TOKEN");
+            }
+
+            (
+                axum::http::StatusCode::OK,
+                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                format!(r#"<!DOCTYPE html>
+<html><head><title>Authentifizierung erfolgreich</title>
+<script>
+  // Notify parent window if this was opened as popup
+  if (window.opener) {{
+    window.opener.postMessage({{ type: 'strava-auth-success' }}, '*');
+    setTimeout(() => window.close(), 2000);
+  }}
+</script>
+</head>
+<body style="font-family: sans-serif; padding: 40px; text-align: center;">
+<h1 style="color: #28a745;">✅ Erfolgreich authentifiziert!</h1>
+<p>Du kannst dieses Fenster jetzt schließen und Aktivitäten abrufen.</p>
+<p style="font-size: 12px; color: #666;">Refresh Token (für .env): <code>{}</code></p>
+<p><a href="/">Zurück zur Karte</a></p>
+</body></html>"#, token.refresh_token.as_deref().unwrap_or("(keiner)")),
+            )
+        }
+        Err(e) => {
+            (
+                axum::http::StatusCode::OK,
+                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                format!(r#"<!DOCTYPE html>
+<html><head><title>Fehler</title></head>
+<body style="font-family: sans-serif; padding: 40px; text-align: center;">
+<h1 style="color: #dc3545;">❌ Token-Austausch fehlgeschlagen</h1>
+<p>{}</p>
+<p><a href="/">Zurück zur Karte</a></p>
+</body></html>"#, e),
+            )
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct AuthStatusResponse {
+    authenticated: bool,
+}
+
+async fn auth_status(State(state): State<AppState>) -> Json<AuthStatusResponse> {
+    let token_guard = state.access_token.read().unwrap();
+    Json(AuthStatusResponse {
+        authenticated: token_guard.is_some(),
+    })
 }

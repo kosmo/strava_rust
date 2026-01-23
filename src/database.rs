@@ -67,21 +67,6 @@ pub fn mark_file_processed(conn: &Connection, filename: &str) -> Result<()> {
     Ok(())
 }
 
-/// Insert a tile if it doesn't exist, keeping the earliest first_visited_at
-#[allow(dead_code)]
-pub fn insert_tile(conn: &Connection, x: u32, y: u32, z: u32, visited_at: i64, activity_id: &str, activity_title: &str, gpx_filename: &str) -> Result<()> {
-    conn.execute(
-        "INSERT INTO tiles (x, y, z, first_visited_at, activity_id, activity_title, gpx_filename) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT(x, y, z) DO UPDATE SET 
-            first_visited_at = MIN(first_visited_at, excluded.first_visited_at),
-            activity_id = CASE WHEN excluded.first_visited_at < first_visited_at THEN excluded.activity_id ELSE activity_id END,
-            activity_title = CASE WHEN excluded.first_visited_at < first_visited_at THEN excluded.activity_title ELSE activity_title END,
-            gpx_filename = CASE WHEN excluded.first_visited_at < first_visited_at THEN excluded.gpx_filename ELSE gpx_filename END",
-        params![x, y, z, visited_at, activity_id, activity_title, gpx_filename],
-    )?;
-    Ok(())
-}
-
 /// Tile data for batch insert
 pub struct TileData {
     pub x: u32,
