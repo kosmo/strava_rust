@@ -121,6 +121,7 @@
     .gemeinde-tooltip {
       font-size: 13px;
     }
+
     .gemeinde-tooltip b {
       font-size: 14px;
     }
@@ -138,6 +139,10 @@
       <label>
         <input type="checkbox" id="show-gemeinden" checked>
         Gemeindegrenzen anzeigen
+      </label>
+      <label>
+        <input type="checkbox" id="show-kreise" checked>
+        Kreisgrenzen anzeigen
       </label>
       <div class="tile-stats">
         <span class="count" id="tile-count">-</span> Tiles besucht (Zoom 14)
@@ -157,16 +162,20 @@
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
-    // Create custom panes for z-ordering: gemeinden below tiles
+    // Create custom panes for z-ordering: gemeinden below kreise below tiles
     map.createPane('gemeindenPane');
-    map.getPane('gemeindenPane').style.zIndex = 400;
-    
+    map.getPane('gemeindenPane').style.zIndex = 380;
+
+    map.createPane('kreisePane');
+    map.getPane('kreisePane').style.zIndex = 400;
+
     map.createPane('tilesPane');
     map.getPane('tilesPane').style.zIndex = 450;
 
     const tracks = {};
     const tilesLayer = L.layerGroup().addTo(map);
     const gemeindenLayer = L.layerGroup().addTo(map);
+    const kreiseLayer = L.layerGroup().addTo(map);
     let tilesVisible = true;
 
     // Convert tile coordinates to lat/lon bounds
@@ -275,6 +284,17 @@
       }
     });
 
+    // Toggle Kreise visibility
+    let kreiseVisible = true;
+    document.getElementById('show-kreise').addEventListener('change', (e) => {
+      kreiseVisible = e.target.checked;
+      if (kreiseVisible) {
+        kreiseLayer.addTo(map);
+      } else {
+        kreiseLayer.remove();
+      }
+    });
+
     // Store tiles globally for gemeinde calculation
     let allTiles = [];
     const TILE_ZOOM = 14;
@@ -301,11 +321,11 @@
     function pointInPolygon(point, polygon) {
       const x = point[1], y = point[0]; // lon, lat
       let inside = false;
-      
+
       for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
         const xi = polygon[i][0], yi = polygon[i][1];
         const xj = polygon[j][0], yj = polygon[j][1];
-        
+
         if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
           inside = !inside;
         }
@@ -332,11 +352,11 @@
       // Get bounding box
       let minLat = Infinity, maxLat = -Infinity;
       let minLon = Infinity, maxLon = -Infinity;
-      
-      const coords = geometry.type === 'Polygon' 
+
+      const coords = geometry.type === 'Polygon'
         ? [geometry.coordinates]
         : geometry.coordinates;
-      
+
       for (const poly of coords) {
         for (const ring of poly) {
           for (const [lon, lat] of ring) {
@@ -351,10 +371,10 @@
       // Get tile range for bounding box
       const topLeft = latLonToTile(maxLat, minLon, TILE_ZOOM);
       const bottomRight = latLonToTile(minLat, maxLon, TILE_ZOOM);
-      
+
       let totalTiles = 0;
       let visitedTiles = 0;
-      
+
       // Check each tile in the bounding box
       for (let x = topLeft.x; x <= bottomRight.x; x++) {
         for (let y = topLeft.y; y <= bottomRight.y; y++) {
@@ -367,76 +387,164 @@
           }
         }
       }
-      
+
       return { totalTiles, visitedTiles };
     }
 
     // Store gemeinden data globally for tile lookups
     let gemeindenData = [];
+    let kreiseData = [];
 
-    // Load Gemeinden and calculate statistics
+    // Find which kreis a point belongs to (using kreiseData)
+    function findKreisForPoint(lat, lon) {
+      const point = [lat, lon];
+      for (const kreis of kreiseData) {
+        if (pointInGeometry(point, kreis.geometry)) {
+          return kreis;
+        }
+      }
+      return null;
+    }
+
+    // Load Gemeinden and Kreise, calculate statistics
     function loadGemeinden() {
       // First, create a set of visited tiles for fast lookup
       const visitedTileSet = new Set(allTiles.map(t => `${t.x},${t.y}`));
-      
+
       fetch('/gemeinden.geojson')
         .then(r => r.json())
         .then(geojson => {
-          // Filter to only show "Gemeinde" features (not Bundesland, Kreis, etc.)
-          const gemeinden = geojson.features.filter(f => 
-            f.properties.Art === 'Gemeinde' || 
+          // Filter Gemeinden
+          const gemeinden = geojson.features.filter(f =>
+            f.properties.Art === 'Gemeinde' ||
             f.properties.Art === 'Stadt' ||
             f.properties.Art === 'Kreisfreie Stadt'
           );
-          
-          gemeinden.forEach(feature => {
+
+          // Filter Kreise
+          const kreise = geojson.features.filter(f =>
+            f.properties.Art === 'Kreis / kreisfreie Stadt'
+          );
+
+          // FIRST: Process Kreise data (need this for gemeinde tooltips)
+          kreise.forEach(feature => {
             const stats = getTilesInGeometry(feature.geometry, visitedTileSet);
             const name = feature.properties.Name || 'Unbekannt';
-            const percent = stats.totalTiles > 0 
-              ? Math.round(stats.visitedTiles / stats.totalTiles * 100) 
+            const percent = stats.totalTiles > 0
+              ? Math.round(stats.visitedTiles / stats.totalTiles * 100)
               : 0;
-            
-            // Store gemeinde data for tile tooltip lookup
-            gemeindenData.push({
+
+            kreiseData.push({
               name: name,
               geometry: feature.geometry,
               stats: stats,
               percent: percent
             });
-            
-            // Render gemeinde borders with interactivity for areas without tiles
-            const layer = L.geoJSON(feature, {
-              pane: 'gemeindenPane',
+          });
+
+          // SECOND: Render Kreise layers
+          kreiseData.forEach(kreisInfo => {
+            const layer = L.geoJSON({ type: 'Feature', geometry: kreisInfo.geometry }, {
+              pane: 'kreisePane',
               style: {
                 color: '#000000',
-                weight: 2,
-                fillColor: 'transparent',
-                fillOpacity: 0,
+                weight: 3,
+                fillColor: '#000000',
+                fillOpacity: 0.01,
                 interactive: true
               }
             });
-            
-            // Add tooltip for gemeinde (shown when hovering outside tiles)
+
+            let tooltipContent = `<div class="gemeinde-tooltip">`;
+            tooltipContent += `<b>Kreis: ${kreisInfo.name}</b><br>`;
+            tooltipContent += `Tiles: ${kreisInfo.stats.visitedTiles} / ${kreisInfo.stats.totalTiles}`;
+            if (kreisInfo.stats.totalTiles > 0) {
+              tooltipContent += ` (${kreisInfo.percent}%)`;
+            }
+            tooltipContent += `</div>`;
+
+            layer.bindTooltip(tooltipContent, {
+              sticky: true,
+              direction: 'top'
+            });
+
+            kreiseLayer.addLayer(layer);
+          });
+
+          // THIRD: Process Gemeinden with Kreis info in tooltip
+          gemeinden.forEach(feature => {
+            const stats = getTilesInGeometry(feature.geometry, visitedTileSet);
+            const name = feature.properties.Name || 'Unbekannt';
+            const percent = stats.totalTiles > 0
+              ? Math.round(stats.visitedTiles / stats.totalTiles * 100)
+              : 0;
+
+            // Get centroid of gemeinde to find its kreis
+            const bounds = L.geoJSON(feature).getBounds();
+            const center = bounds.getCenter();
+            const kreis = findKreisForPoint(center.lat, center.lng);
+
+            gemeindenData.push({
+              name: name,
+              geometry: feature.geometry,
+              stats: stats,
+              percent: percent,
+              kreis: kreis
+            });
+
+            const layer = L.geoJSON(feature, {
+              pane: 'gemeindenPane',
+              style: {
+                color: '#888888',
+                weight: 2,
+                fillColor: '#888888',
+                fillOpacity: 0.01,
+                interactive: true
+              }
+            });
+
+            // Build tooltip with gemeinde + kreis info
             let tooltipContent = `<div class="gemeinde-tooltip">`;
             tooltipContent += `<b>${name}</b><br>`;
             tooltipContent += `Tiles: ${stats.visitedTiles} / ${stats.totalTiles}`;
             if (stats.totalTiles > 0) {
               tooltipContent += ` (${percent}%)`;
             }
+
+            // Add kreis info
+            if (kreis) {
+              tooltipContent += `<hr style="margin: 4px 0; border: none; border-top: 1px solid #ccc;">`;
+              tooltipContent += `<b>Kreis: ${kreis.name}</b><br>`;
+              tooltipContent += `Tiles: ${kreis.stats.visitedTiles} / ${kreis.stats.totalTiles}`;
+              if (kreis.stats.totalTiles > 0) {
+                tooltipContent += ` (${kreis.percent}%)`;
+              }
+            }
             tooltipContent += `</div>`;
-            
+
             layer.bindTooltip(tooltipContent, {
               sticky: true,
               direction: 'top'
             });
-            
+
             gemeindenLayer.addLayer(layer);
           });
-          
+
           // Now update tile tooltips with gemeinde info
           updateTileTooltipsWithGemeinden();
         })
         .catch(err => console.error('Error loading Gemeinden:', err));
+    }
+
+    // Find which kreis a tile belongs to
+    function findKreisForTile(tileX, tileY) {
+      const center = tileCenterToLatLon(tileX, tileY, TILE_ZOOM);
+      for (const kreis of kreiseData) {
+        if (pointInGeometry(center, kreis.geometry)) {
+          return kreis;
+        }
+      }
+      return null;
     }
 
     // Find which gemeinde a tile belongs to
@@ -454,7 +562,7 @@
     function updateTileTooltipsWithGemeinden() {
       // Clear and rebuild tiles layer with gemeinde info
       tilesLayer.clearLayers();
-      
+
       const timestamps = allTiles
         .map(t => t.first_visited_at)
         .filter(t => t && t > 0);
@@ -467,16 +575,17 @@
         const title = tile.activity_title || 'Unbekannt';
         const activityId = tile.activity_id || '';
         const tileColor = getTileColor(tile.first_visited_at, minTime, maxTime);
-        
+
         // Find gemeinde for this tile
         const gemeinde = findGemeindeForTile(tile.x, tile.y);
+        const kreis = findKreisForTile(tile.x, tile.y);
 
         let tooltipContent = `<b>${title}</b><br>`;
         tooltipContent += `Erste Durchfahrt: ${dateStr}`;
         if (activityId) {
           tooltipContent += `<br>ID: ${activityId}`;
         }
-        
+
         // Add gemeinde info if found
         if (gemeinde) {
           tooltipContent += `<hr style="margin: 4px 0; border: none; border-top: 1px solid #ccc;">`;
@@ -484,6 +593,16 @@
           tooltipContent += `Tiles: ${gemeinde.stats.visitedTiles} / ${gemeinde.stats.totalTiles}`;
           if (gemeinde.stats.totalTiles > 0) {
             tooltipContent += ` (${gemeinde.percent}%)`;
+          }
+        }
+
+        // Add kreis info if found
+        if (kreis) {
+          tooltipContent += `<hr style="margin: 4px 0; border: none; border-top: 1px solid #ccc;">`;
+          tooltipContent += `<b>Kreis: ${kreis.name}</b><br>`;
+          tooltipContent += `Tiles: ${kreis.stats.visitedTiles} / ${kreis.stats.totalTiles}`;
+          if (kreis.stats.totalTiles > 0) {
+            tooltipContent += ` (${kreis.percent}%)`;
           }
         }
 
@@ -505,7 +624,7 @@
 
     // Modified loadTiles to also trigger Gemeinden loading
     const originalLoadTiles = loadTiles;
-    loadTiles = function() {
+    loadTiles = function () {
       fetch('/tiles').then(r => r.json()).then(data => {
         document.getElementById('tile-count').textContent = data.total_count;
         allTiles = data.tiles; // Store for gemeinde calculation
