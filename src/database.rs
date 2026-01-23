@@ -1,11 +1,11 @@
-use rusqlite::{Connection, Result, params};
+use rusqlite::{params, Connection, Result};
 
 const DB_PATH: &str = "tiles.db";
 
 /// Initialize the database and create tables if they don't exist
 pub fn init_db() -> Result<Connection> {
     let conn = Connection::open(DB_PATH)?;
-    
+
     // Create table for visited tiles with first visit timestamp and activity info
     conn.execute(
         "CREATE TABLE IF NOT EXISTS tiles (
@@ -20,7 +20,7 @@ pub fn init_db() -> Result<Connection> {
         )",
         [],
     )?;
-    
+
     // Create table to track processed GPX files
     conn.execute(
         "CREATE TABLE IF NOT EXISTS processed_files (
@@ -29,7 +29,7 @@ pub fn init_db() -> Result<Connection> {
         )",
         [],
     )?;
-    
+
     // Create table to track imported Strava activities
     conn.execute(
         "CREATE TABLE IF NOT EXISTS imported_activities (
@@ -40,13 +40,13 @@ pub fn init_db() -> Result<Connection> {
         )",
         [],
     )?;
-    
+
     // Migration: Add distance_km column if it doesn't exist (for existing databases)
     let _ = conn.execute(
         "ALTER TABLE imported_activities ADD COLUMN distance_km REAL DEFAULT 0.0",
         [],
     );
-    
+
     Ok(conn)
 }
 
@@ -66,7 +66,7 @@ pub fn mark_file_processed(conn: &Connection, filename: &str) -> Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
-    
+
     conn.execute(
         "INSERT OR IGNORE INTO processed_files (filename, processed_at) VALUES (?1, ?2)",
         params![filename, now],
@@ -97,9 +97,17 @@ pub fn insert_tiles_batch(conn: &mut Connection, tiles: &[TileData]) -> Result<(
                 activity_title = CASE WHEN excluded.first_visited_at < first_visited_at THEN excluded.activity_title ELSE activity_title END,
                 gpx_filename = CASE WHEN excluded.first_visited_at < first_visited_at THEN excluded.gpx_filename ELSE gpx_filename END"
         )?;
-        
+
         for tile in tiles {
-            stmt.execute(params![tile.x, tile.y, tile.z, tile.visited_at, tile.activity_id, tile.activity_title, tile.gpx_filename])?;
+            stmt.execute(params![
+                tile.x,
+                tile.y,
+                tile.z,
+                tile.visited_at,
+                tile.activity_id,
+                tile.activity_title,
+                tile.gpx_filename
+            ])?;
         }
     }
     tx.commit()?;
@@ -108,7 +116,9 @@ pub fn insert_tiles_batch(conn: &mut Connection, tiles: &[TileData]) -> Result<(
 
 /// Get all visited tiles from the database
 pub fn get_all_tiles(conn: &Connection) -> Result<Vec<TileRecord>> {
-    let mut stmt = conn.prepare("SELECT x, y, z, first_visited_at, activity_id, activity_title, gpx_filename FROM tiles")?;
+    let mut stmt = conn.prepare(
+        "SELECT x, y, z, first_visited_at, activity_id, activity_title, gpx_filename FROM tiles",
+    )?;
     let tiles = stmt.query_map([], |row| {
         Ok(TileRecord {
             x: row.get(0)?,
@@ -120,7 +130,7 @@ pub fn get_all_tiles(conn: &Connection) -> Result<Vec<TileRecord>> {
             gpx_filename: row.get(6)?,
         })
     })?;
-    
+
     tiles.collect()
 }
 
@@ -152,12 +162,17 @@ pub fn is_activity_imported(conn: &Connection, activity_id: i64) -> Result<bool>
 }
 
 /// Mark an activity as imported from Strava
-pub fn mark_activity_imported(conn: &Connection, activity_id: i64, activity_name: Option<&str>, distance_km: f64) -> Result<()> {
+pub fn mark_activity_imported(
+    conn: &Connection,
+    activity_id: i64,
+    activity_name: Option<&str>,
+    distance_km: f64,
+) -> Result<()> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
-    
+
     conn.execute(
         "INSERT OR IGNORE INTO imported_activities (activity_id, activity_name, imported_at, distance_km) VALUES (?1, ?2, ?3, ?4)",
         params![activity_id, activity_name, now, distance_km],

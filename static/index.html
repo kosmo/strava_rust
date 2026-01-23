@@ -396,7 +396,7 @@
             });
             clusterLayer.addLayer(clusterRect);
           });
-          
+
           // Add a single tooltip for the Yard
           if (data.max_cluster.tiles.length > 0) {
             const firstTile = data.max_cluster.tiles[0];
@@ -930,7 +930,7 @@
         const result = await response.json();
         const authStatus = document.getElementById('auth-status');
         const authBtn = document.getElementById('auth-btn');
-        
+
         if (result.authenticated) {
           authStatus.textContent = '✅ Authentifiziert';
           authStatus.style.color = '#28a745';
@@ -948,19 +948,19 @@
     async function startAuth() {
       const authBtn = document.getElementById('auth-btn');
       const authStatus = document.getElementById('auth-status');
-      
+
       authBtn.disabled = true;
       authStatus.textContent = 'Starte Authentifizierung...';
-      
+
       try {
         const response = await fetch('/auth/start');
         const result = await response.json();
-        
+
         if (result.success && result.auth_url) {
           // Open Strava auth in new window
           const authWindow = window.open(result.auth_url, 'strava-auth', 'width=600,height=700');
           authStatus.textContent = 'Bitte im Popup-Fenster anmelden...';
-          
+
           // Listen for success message from popup
           window.addEventListener('message', function handler(event) {
             if (event.data && event.data.type === 'strava-auth-success') {
@@ -970,7 +970,7 @@
               authBtn.style.display = 'none';
             }
           });
-          
+
           // Also poll for status in case postMessage doesn't work
           const pollInterval = setInterval(async () => {
             try {
@@ -982,9 +982,9 @@
                 authStatus.style.color = '#28a745';
                 authBtn.style.display = 'none';
               }
-            } catch (e) {}
+            } catch (e) { }
           }, 2000);
-          
+
           // Stop polling after 2 minutes
           setTimeout(() => clearInterval(pollInterval), 120000);
         } else {

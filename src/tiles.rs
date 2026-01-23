@@ -13,8 +13,9 @@ fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let d_lon = (lon2 - lon1).to_radians();
     let lat1_rad = lat1.to_radians();
     let lat2_rad = lat2.to_radians();
-    
-    let a = (d_lat / 2.0).sin().powi(2) + lat1_rad.cos() * lat2_rad.cos() * (d_lon / 2.0).sin().powi(2);
+
+    let a =
+        (d_lat / 2.0).sin().powi(2) + lat1_rad.cos() * lat2_rad.cos() * (d_lon / 2.0).sin().powi(2);
     let c = 2.0 * a.sqrt().asin();
     R * c
 }
@@ -24,7 +25,7 @@ fn calculate_distance_from_points(points: &[(f64, f64, i64)]) -> f64 {
     if points.len() < 2 {
         return 0.0;
     }
-    
+
     let mut total = 0.0;
     for window in points.windows(2) {
         let (lat1, lon1, _) = window[0];
@@ -92,11 +93,11 @@ fn extract_attr(s: &str, attr: &str) -> Option<f64> {
 fn extract_time_from_trkpt(content: &str, start_pos: usize) -> Option<i64> {
     // Look for <time> tag after the trkpt
     let segment = &content[start_pos..];
-    
+
     // Find the end of this trkpt (could be </trkpt> or next <trkpt)
     let end_pos = segment.find("</trkpt>").unwrap_or(segment.len().min(500));
     let trkpt_content = &segment[..end_pos];
-    
+
     if let Some(time_start) = trkpt_content.find("<time>") {
         let rest = &trkpt_content[time_start + 6..];
         if let Some(time_end) = rest.find("</time>") {
@@ -113,7 +114,11 @@ fn parse_iso8601(s: &str) -> i64 {
     let s = if let Some(pos) = s.rfind('+') {
         &s[..pos]
     } else if let Some(pos) = s.rfind('-') {
-        if pos > 10 { &s[..pos] } else { s }
+        if pos > 10 {
+            &s[..pos]
+        } else {
+            s
+        }
     } else {
         s
     };
@@ -136,7 +141,11 @@ fn parse_iso8601(s: &str) -> i64 {
     let day = date_parts[2];
     let hour = time_parts[0];
     let min = time_parts[1];
-    let sec = if time_parts.len() > 2 { time_parts[2] } else { 0 };
+    let sec = if time_parts.len() > 2 {
+        time_parts[2]
+    } else {
+        0
+    };
 
     let mut days: i64 = 0;
     for y in 1970..year {
@@ -159,7 +168,7 @@ fn is_leap_year(year: i32) -> bool {
 fn extract_all_points_with_time_from_gpx(content: &str) -> Vec<(f64, f64, i64)> {
     let mut points = Vec::new();
     let mut default_time: Option<i64> = None;
-    
+
     // Try to extract default time from metadata
     if let Some(start) = content.find("<metadata>") {
         if let Some(end) = content.find("</metadata>") {
@@ -178,10 +187,10 @@ fn extract_all_points_with_time_from_gpx(content: &str) -> Vec<(f64, f64, i64)> 
     while let Some(pos) = content[search_start..].find("<trkpt") {
         let abs_pos = search_start + pos;
         let segment = &content[abs_pos..];
-        
+
         let lat = extract_attr(segment, "lat");
         let lon = extract_attr(segment, "lon");
-        
+
         if let (Some(lat), Some(lon)) = (lat, lon) {
             // Try to get time from this specific trackpoint
             let time = extract_time_from_trkpt(content, abs_pos)
@@ -189,10 +198,10 @@ fn extract_all_points_with_time_from_gpx(content: &str) -> Vec<(f64, f64, i64)> 
                 .unwrap_or(0);
             points.push((lat, lon, time));
         }
-        
+
         search_start = abs_pos + 6;
     }
-    
+
     points
 }
 
@@ -218,22 +227,26 @@ fn extract_activity_id(filename: &str) -> Option<String> {
 }
 
 /// Process a single GPX file and store tiles in the database
-pub fn process_gpx_file(conn: &mut Connection, filename: &str, content: &str) -> Result<usize, String> {
+pub fn process_gpx_file(
+    conn: &mut Connection,
+    filename: &str,
+    content: &str,
+) -> Result<usize, String> {
     // Check if already processed
     if database::is_file_processed(conn, filename).map_err(|e| e.to_string())? {
         return Ok(0);
     }
-    
+
     let points = extract_all_points_with_time_from_gpx(content);
     let activity_title = extract_track_name(content).unwrap_or_else(|| filename.to_string());
-    
+
     // Calculate distance from GPS points
     let distance_km = calculate_distance_from_points(&points);
     let activity_id = extract_activity_id(filename).unwrap_or_default();
-    
+
     // Collect tiles with their earliest timestamp
     let mut tile_times: HashMap<(u32, u32), i64> = HashMap::new();
-    
+
     for (lat, lon, time) in points {
         let (x, y) = lat_lon_to_tile(lat, lon, TILE_ZOOM);
         tile_times
@@ -241,7 +254,7 @@ pub fn process_gpx_file(conn: &mut Connection, filename: &str, content: &str) ->
             .and_modify(|t| *t = (*t).min(time))
             .or_insert(time);
     }
-    
+
     // Prepare batch insert
     let tiles: Vec<database::TileData> = tile_times
         .into_iter()
@@ -255,22 +268,30 @@ pub fn process_gpx_file(conn: &mut Connection, filename: &str, content: &str) ->
             gpx_filename: filename.to_string(),
         })
         .collect();
-    
+
     let count = tiles.len();
-    
+
     // Insert tiles
     database::insert_tiles_batch(conn, &tiles).map_err(|e| e.to_string())?;
-    
+
     // Mark file as processed
     database::mark_file_processed(conn, filename).map_err(|e| e.to_string())?;
-    
+
     // Store activity with distance in imported_activities
     if let Ok(activity_id_num) = activity_id.parse::<i64>() {
-        if let Err(e) = database::mark_activity_imported(conn, activity_id_num, Some(&activity_title), distance_km) {
-            eprintln!("Warning: Failed to mark activity {} as imported: {}", activity_id, e);
+        if let Err(e) = database::mark_activity_imported(
+            conn,
+            activity_id_num,
+            Some(&activity_title),
+            distance_km,
+        ) {
+            eprintln!(
+                "Warning: Failed to mark activity {} as imported: {}",
+                activity_id, e
+            );
         }
     }
-    
+
     Ok(count)
 }
 
@@ -278,7 +299,7 @@ pub fn process_gpx_file(conn: &mut Connection, filename: &str, content: &str) ->
 pub fn process_all_gpx_files(conn: &mut Connection) -> Result<usize, String> {
     let gpx_dir = PathBuf::from("gpx");
     let mut total_new_tiles = 0;
-    
+
     if let Ok(entries) = fs::read_dir(&gpx_dir) {
         for entry in entries.flatten() {
             if let Some(name) = entry.file_name().to_str() {
@@ -301,7 +322,7 @@ pub fn process_all_gpx_files(conn: &mut Connection) -> Result<usize, String> {
             }
         }
     }
-    
+
     Ok(total_new_tiles)
 }
 
@@ -355,49 +376,55 @@ pub struct MaxClusterResult {
 /// 2. From those, find the largest connected cluster (BFS)
 pub fn calculate_max_cluster(tiles: &[TileInfo]) -> MaxClusterResult {
     use std::collections::{HashSet, VecDeque};
-    
+
     if tiles.is_empty() {
-        return MaxClusterResult { size: 0, tiles: vec![] };
+        return MaxClusterResult {
+            size: 0,
+            tiles: vec![],
+        };
     }
-    
+
     // Step 1: Find all tiles surrounded on all 4 sides
     let all_visited: HashSet<(u32, u32)> = tiles.iter().map(|t| (t.x, t.y)).collect();
-    
+
     let surrounded_tiles: HashSet<(u32, u32)> = tiles
         .iter()
         .filter(|t| {
             let x = t.x;
             let y = t.y;
-            
+
             let has_left = x > 0 && all_visited.contains(&(x - 1, y));
             let has_right = all_visited.contains(&(x + 1, y));
             let has_up = y > 0 && all_visited.contains(&(x, y - 1));
             let has_down = all_visited.contains(&(x, y + 1));
-            
+
             has_left && has_right && has_up && has_down
         })
         .map(|t| (t.x, t.y))
         .collect();
-    
+
     if surrounded_tiles.is_empty() {
-        return MaxClusterResult { size: 0, tiles: vec![] };
+        return MaxClusterResult {
+            size: 0,
+            tiles: vec![],
+        };
     }
-    
+
     // Step 2: Find the largest connected cluster within surrounded tiles using BFS
     let mut unvisited = surrounded_tiles.clone();
     let mut max_cluster: Vec<(u32, u32)> = vec![];
-    
+
     while !unvisited.is_empty() {
         let start = *unvisited.iter().next().unwrap();
         let mut queue = VecDeque::new();
         let mut cluster = vec![];
-        
+
         queue.push_back(start);
         unvisited.remove(&start);
-        
+
         while let Some((x, y)) = queue.pop_front() {
             cluster.push((x, y));
-            
+
             // Check 4 orthogonal neighbors (only within surrounded tiles)
             let mut neighbors = Vec::new();
             if x > 0 {
@@ -408,19 +435,19 @@ pub fn calculate_max_cluster(tiles: &[TileInfo]) -> MaxClusterResult {
                 neighbors.push((x, y - 1));
             }
             neighbors.push((x, y + 1));
-            
+
             for neighbor in neighbors {
                 if unvisited.remove(&neighbor) {
                     queue.push_back(neighbor);
                 }
             }
         }
-        
+
         if cluster.len() > max_cluster.len() {
             max_cluster = cluster;
         }
     }
-    
+
     MaxClusterResult {
         size: max_cluster.len(),
         tiles: max_cluster,
@@ -431,40 +458,44 @@ pub fn calculate_max_cluster(tiles: &[TileInfo]) -> MaxClusterResult {
 /// This should be called with the tiles from the max cluster (Yard)
 pub fn calculate_max_square_from_coords(tile_coords: &[(u32, u32)]) -> MaxSquareResult {
     use std::collections::HashSet;
-    
+
     if tile_coords.is_empty() {
-        return MaxSquareResult { size: 0, top_left_x: 0, top_left_y: 0 };
+        return MaxSquareResult {
+            size: 0,
+            top_left_x: 0,
+            top_left_y: 0,
+        };
     }
-    
+
     // Create a set of tiles for O(1) lookup
     let visited: HashSet<(u32, u32)> = tile_coords.iter().copied().collect();
-    
+
     // Find bounds
     let min_x = tile_coords.iter().map(|(x, _)| *x).min().unwrap();
     let max_x = tile_coords.iter().map(|(x, _)| *x).max().unwrap();
     let min_y = tile_coords.iter().map(|(_, y)| *y).min().unwrap();
     let max_y = tile_coords.iter().map(|(_, y)| *y).max().unwrap();
-    
+
     let width = (max_x - min_x + 1) as usize;
     let height = (max_y - min_y + 1) as usize;
-    
+
     // DP table for largest square ending at each cell
     let mut dp = vec![vec![0u32; width]; height];
     let mut max_size = 0u32;
     let mut max_pos = (min_x, min_y);
-    
+
     for y in 0..height {
         for x in 0..width {
             let abs_x = min_x + x as u32;
             let abs_y = min_y + y as u32;
-            
+
             if visited.contains(&(abs_x, abs_y)) {
                 if x == 0 || y == 0 {
                     dp[y][x] = 1;
                 } else {
-                    dp[y][x] = dp[y-1][x].min(dp[y][x-1]).min(dp[y-1][x-1]) + 1;
+                    dp[y][x] = dp[y - 1][x].min(dp[y][x - 1]).min(dp[y - 1][x - 1]) + 1;
                 }
-                
+
                 if dp[y][x] > max_size {
                     max_size = dp[y][x];
                     // Top-left corner of the square
@@ -473,7 +504,7 @@ pub fn calculate_max_square_from_coords(tile_coords: &[(u32, u32)]) -> MaxSquare
             }
         }
     }
-    
+
     MaxSquareResult {
         size: max_size,
         top_left_x: max_pos.0,
