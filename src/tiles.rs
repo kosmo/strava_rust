@@ -12,6 +12,9 @@ pub struct TileInfo {
     pub y: u32,
     pub z: u32,
     pub first_visited_at: i64,
+    pub activity_id: Option<String>,
+    pub activity_title: Option<String>,
+    pub gpx_filename: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -165,6 +168,27 @@ fn extract_all_points_with_time_from_gpx(content: &str) -> Vec<(f64, f64, i64)> 
     points
 }
 
+/// Extract the track name from GPX content
+fn extract_track_name(content: &str) -> Option<String> {
+    if let Some(start) = content.find("<name>") {
+        let rest = &content[start + 6..];
+        if let Some(end) = rest.find("</name>") {
+            return Some(rest[..end].to_string());
+        }
+    }
+    None
+}
+
+/// Extract activity ID from filename (e.g., "activity_15409133734.gpx" -> "15409133734")
+fn extract_activity_id(filename: &str) -> Option<String> {
+    let name = filename.strip_suffix(".gpx")?;
+    if let Some(id) = name.strip_prefix("activity_") {
+        Some(id.to_string())
+    } else {
+        Some(name.to_string())
+    }
+}
+
 /// Process a single GPX file and store tiles in the database
 pub fn process_gpx_file(conn: &mut Connection, filename: &str, content: &str) -> Result<usize, String> {
     // Check if already processed
@@ -173,6 +197,8 @@ pub fn process_gpx_file(conn: &mut Connection, filename: &str, content: &str) ->
     }
     
     let points = extract_all_points_with_time_from_gpx(content);
+    let activity_title = extract_track_name(content).unwrap_or_else(|| filename.to_string());
+    let activity_id = extract_activity_id(filename).unwrap_or_default();
     
     // Collect tiles with their earliest timestamp
     let mut tile_times: HashMap<(u32, u32), i64> = HashMap::new();
@@ -186,9 +212,17 @@ pub fn process_gpx_file(conn: &mut Connection, filename: &str, content: &str) ->
     }
     
     // Prepare batch insert
-    let tiles: Vec<(u32, u32, u32, i64)> = tile_times
+    let tiles: Vec<database::TileData> = tile_times
         .into_iter()
-        .map(|((x, y), time)| (x, y, TILE_ZOOM, time))
+        .map(|((x, y), time)| database::TileData {
+            x,
+            y,
+            z: TILE_ZOOM,
+            visited_at: time,
+            activity_id: activity_id.clone(),
+            activity_title: activity_title.clone(),
+            gpx_filename: filename.to_string(),
+        })
         .collect();
     
     let count = tiles.len();
@@ -243,6 +277,9 @@ pub fn get_visited_tiles(conn: &Connection) -> TilesResponse {
                 y: r.y,
                 z: r.z,
                 first_visited_at: r.first_visited_at,
+                activity_id: r.activity_id,
+                activity_title: r.activity_title,
+                gpx_filename: r.gpx_filename,
             })
             .collect(),
         Err(e) => {
