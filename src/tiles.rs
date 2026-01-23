@@ -1,13 +1,17 @@
+use rusqlite::Connection;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+
+use crate::database;
 
 #[derive(Serialize)]
 pub struct TileInfo {
     pub x: u32,
     pub y: u32,
     pub z: u32,
+    pub first_visited_at: i64,
 }
 
 #[derive(Serialize)]
@@ -53,47 +57,199 @@ fn extract_attr(s: &str, attr: &str) -> Option<f64> {
     rest[..end].parse().ok()
 }
 
-fn extract_all_points_from_gpx(content: &str) -> Vec<(f64, f64)> {
-    let mut points = Vec::new();
+/// Extract time attribute from a trkpt element
+fn extract_time_from_trkpt(content: &str, start_pos: usize) -> Option<i64> {
+    // Look for <time> tag after the trkpt
+    let segment = &content[start_pos..];
+    
+    // Find the end of this trkpt (could be </trkpt> or next <trkpt)
+    let end_pos = segment.find("</trkpt>").unwrap_or(segment.len().min(500));
+    let trkpt_content = &segment[..end_pos];
+    
+    if let Some(time_start) = trkpt_content.find("<time>") {
+        let rest = &trkpt_content[time_start + 6..];
+        if let Some(time_end) = rest.find("</time>") {
+            let time_str = &rest[..time_end];
+            return Some(parse_iso8601(time_str));
+        }
+    }
+    None
+}
 
-    for line in content.lines() {
-        if let Some(start) = line.find("<trkpt") {
-            let segment = &line[start..];
-            let lat = extract_attr(segment, "lat");
-            let lon = extract_attr(segment, "lon");
-            if let (Some(lat), Some(lon)) = (lat, lon) {
-                points.push((lat, lon));
+/// Parse ISO8601 timestamp to Unix epoch seconds
+fn parse_iso8601(s: &str) -> i64 {
+    let s = s.trim().trim_end_matches('Z');
+    let s = if let Some(pos) = s.rfind('+') {
+        &s[..pos]
+    } else if let Some(pos) = s.rfind('-') {
+        if pos > 10 { &s[..pos] } else { s }
+    } else {
+        s
+    };
+
+    let parts: Vec<&str> = s.split('T').collect();
+    if parts.len() != 2 {
+        return 0;
+    }
+
+    let date_parts: Vec<i32> = parts[0].split('-').filter_map(|p| p.parse().ok()).collect();
+    let time_str = parts[1].split('.').next().unwrap_or(parts[1]); // Remove fractional seconds
+    let time_parts: Vec<i32> = time_str.split(':').filter_map(|p| p.parse().ok()).collect();
+
+    if date_parts.len() < 3 || time_parts.len() < 2 {
+        return 0;
+    }
+
+    let year = date_parts[0];
+    let month = date_parts[1];
+    let day = date_parts[2];
+    let hour = time_parts[0];
+    let min = time_parts[1];
+    let sec = if time_parts.len() > 2 { time_parts[2] } else { 0 };
+
+    let mut days: i64 = 0;
+    for y in 1970..year {
+        days += if is_leap_year(y) { 366 } else { 365 };
+    }
+    let month_days = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    days += month_days[(month - 1) as usize] as i64;
+    if month > 2 && is_leap_year(year) {
+        days += 1;
+    }
+    days += (day - 1) as i64;
+
+    days * 86400 + hour as i64 * 3600 + min as i64 * 60 + sec as i64
+}
+
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+fn extract_all_points_with_time_from_gpx(content: &str) -> Vec<(f64, f64, i64)> {
+    let mut points = Vec::new();
+    let mut default_time: Option<i64> = None;
+    
+    // Try to extract default time from metadata
+    if let Some(start) = content.find("<metadata>") {
+        if let Some(end) = content.find("</metadata>") {
+            let metadata = &content[start..end];
+            if let Some(time_start) = metadata.find("<time>") {
+                let rest = &metadata[time_start + 6..];
+                if let Some(time_end) = rest.find("</time>") {
+                    let time_str = &rest[..time_end];
+                    default_time = Some(parse_iso8601(time_str));
+                }
             }
         }
     }
+
+    let mut search_start = 0;
+    while let Some(pos) = content[search_start..].find("<trkpt") {
+        let abs_pos = search_start + pos;
+        let segment = &content[abs_pos..];
+        
+        let lat = extract_attr(segment, "lat");
+        let lon = extract_attr(segment, "lon");
+        
+        if let (Some(lat), Some(lon)) = (lat, lon) {
+            // Try to get time from this specific trackpoint
+            let time = extract_time_from_trkpt(content, abs_pos)
+                .or(default_time)
+                .unwrap_or(0);
+            points.push((lat, lon, time));
+        }
+        
+        search_start = abs_pos + 6;
+    }
+    
     points
 }
 
-pub fn get_visited_tiles() -> TilesResponse {
-    let gpx_dir = PathBuf::from("gpx");
-    let mut visited_tiles: HashSet<(u32, u32)> = HashSet::new();
+/// Process a single GPX file and store tiles in the database
+pub fn process_gpx_file(conn: &mut Connection, filename: &str, content: &str) -> Result<usize, String> {
+    // Check if already processed
+    if database::is_file_processed(conn, filename).map_err(|e| e.to_string())? {
+        return Ok(0);
+    }
+    
+    let points = extract_all_points_with_time_from_gpx(content);
+    
+    // Collect tiles with their earliest timestamp
+    let mut tile_times: HashMap<(u32, u32), i64> = HashMap::new();
+    
+    for (lat, lon, time) in points {
+        let (x, y) = lat_lon_to_tile(lat, lon, TILE_ZOOM);
+        tile_times
+            .entry((x, y))
+            .and_modify(|t| *t = (*t).min(time))
+            .or_insert(time);
+    }
+    
+    // Prepare batch insert
+    let tiles: Vec<(u32, u32, u32, i64)> = tile_times
+        .into_iter()
+        .map(|((x, y), time)| (x, y, TILE_ZOOM, time))
+        .collect();
+    
+    let count = tiles.len();
+    
+    // Insert tiles
+    database::insert_tiles_batch(conn, &tiles).map_err(|e| e.to_string())?;
+    
+    // Mark file as processed
+    database::mark_file_processed(conn, filename).map_err(|e| e.to_string())?;
+    
+    Ok(count)
+}
 
+/// Process all GPX files in the gpx directory
+pub fn process_all_gpx_files(conn: &mut Connection) -> Result<usize, String> {
+    let gpx_dir = PathBuf::from("gpx");
+    let mut total_new_tiles = 0;
+    
     if let Ok(entries) = fs::read_dir(&gpx_dir) {
         for entry in entries.flatten() {
             if let Some(name) = entry.file_name().to_str() {
                 if name.ends_with(".gpx") {
                     let path = entry.path();
                     if let Ok(content) = fs::read_to_string(&path) {
-                        let points = extract_all_points_from_gpx(&content);
-                        for (lat, lon) in points {
-                            let (x, y) = lat_lon_to_tile(lat, lon, TILE_ZOOM);
-                            visited_tiles.insert((x, y));
+                        match process_gpx_file(conn, name, &content) {
+                            Ok(count) => {
+                                if count > 0 {
+                                    println!("Processed {}: {} tiles", name, count);
+                                    total_new_tiles += count;
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Error processing {}: {}", name, e);
+                            }
                         }
                     }
                 }
             }
         }
     }
+    
+    Ok(total_new_tiles)
+}
 
-    let tiles: Vec<TileInfo> = visited_tiles
-        .into_iter()
-        .map(|(x, y)| TileInfo { x, y, z: TILE_ZOOM })
-        .collect();
+/// Get visited tiles from the database
+pub fn get_visited_tiles(conn: &Connection) -> TilesResponse {
+    let tiles = match database::get_all_tiles(conn) {
+        Ok(records) => records
+            .into_iter()
+            .map(|r| TileInfo {
+                x: r.x,
+                y: r.y,
+                z: r.z,
+                first_visited_at: r.first_visited_at,
+            })
+            .collect(),
+        Err(e) => {
+            eprintln!("Error getting tiles from database: {}", e);
+            Vec::new()
+        }
+    };
 
     let total_count = tiles.len();
 

@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
+mod database;
 mod map_server;
 mod strava;
 mod tiles;

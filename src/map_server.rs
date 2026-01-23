@@ -1,12 +1,20 @@
 use axum::{
-    extract::Path as AxumPath, http::header, response::IntoResponse, routing::get, Json, Router,
+    extract::Path as AxumPath, extract::State, http::header, response::IntoResponse, routing::get, Json, Router,
 };
+use rusqlite::Connection;
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 
+use crate::database;
 use crate::tiles;
+
+#[derive(Clone)]
+struct AppState {
+    db: Arc<Mutex<Connection>>,
+}
 
 #[derive(Serialize)]
 struct GpxFileInfo {
@@ -16,11 +24,29 @@ struct GpxFileInfo {
 }
 
 pub async fn serve_map_server() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize database
+    let mut conn = database::init_db()?;
+    
+    // Process any new GPX files on startup
+    println!("Processing GPX files...");
+    let new_tiles = tiles::process_all_gpx_files(&mut conn)?;
+    if new_tiles > 0 {
+        println!("Added {} new tile entries", new_tiles);
+    }
+    
+    let total_tiles = database::get_tile_count(&conn)?;
+    println!("Total tiles in database: {}", total_tiles);
+    
+    let state = AppState {
+        db: Arc::new(Mutex::new(conn)),
+    };
+    
     let app = Router::new()
         .route("/", get(serve_map_html))
         .route("/gpx", get(list_gpx_files))
         .route("/gpx/:filename", get(serve_gpx_file))
-        .route("/tiles", get(list_visited_tiles));
+        .route("/tiles", get(list_visited_tiles))
+        .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
     println!("Map server running at http://127.0.0.1:8080");
@@ -215,6 +241,7 @@ async fn serve_gpx_file(AxumPath(filename): AxumPath<String>) -> impl IntoRespon
     }
 }
 
-async fn list_visited_tiles() -> Json<tiles::TilesResponse> {
-    Json(tiles::get_visited_tiles())
+async fn list_visited_tiles(State(state): State<AppState>) -> Json<tiles::TilesResponse> {
+    let conn = state.db.lock().unwrap();
+    Json(tiles::get_visited_tiles(&conn))
 }

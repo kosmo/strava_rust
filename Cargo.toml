@@ -12,3 +12,4 @@ dotenvy = "0.15"
 clap = { version = "4", features = ["derive"] }
 axum = "0.7"
 chrono = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
