@@ -55,6 +55,7 @@ pub async fn serve_map_server() -> Result<(), Box<dyn std::error::Error>> {
         .route("/gemeinden.geojson", get(serve_gemeinden_geojson))
         .route("/fetch-activities", post(fetch_activities))
         .route("/stats", get(get_stats))
+        .route("/square-cluster", get(get_square_cluster))
         .route("/auth/start", get(auth_start))
         .route("/auth/callback", get(auth_callback))
         .route("/auth/status", get(auth_status))
@@ -674,6 +675,8 @@ async fn auth_status(State(state): State<AppState>) -> Json<AuthStatusResponse> 
 struct StatsResponse {
     total_distance_km: f64,
     activity_count: usize,
+    max_square: u32,
+    max_cluster: usize,
 }
 
 async fn get_stats(State(state): State<AppState>) -> Json<StatsResponse> {
@@ -684,8 +687,83 @@ async fn get_stats(State(state): State<AppState>) -> Json<StatsResponse> {
         .map(|ids| ids.len())
         .unwrap_or(0);
     
+    // Calculate Yard and Übersquadrat (independently from all tiles)
+    let tiles_response = tiles::get_visited_tiles(&conn);
+    let max_cluster = tiles::calculate_max_cluster(&tiles_response.tiles);
+    let all_coords: Vec<(u32, u32)> = tiles_response.tiles.iter().map(|t| (t.x, t.y)).collect();
+    let max_square = tiles::calculate_max_square_from_coords(&all_coords);
+    
     Json(StatsResponse {
         total_distance_km: (total_distance * 100.0).round() / 100.0,
         activity_count,
+        max_square: max_square.size,
+        max_cluster: max_cluster.size,
+    })
+}
+
+#[derive(Serialize)]
+struct SquareClusterResponse {
+    max_square: SquareGeometry,
+    max_cluster: ClusterGeometry,
+    zoom: u32,
+}
+
+#[derive(Serialize)]
+struct SquareGeometry {
+    size: u32,
+    bounds: [[f64; 2]; 2], // [[south, west], [north, east]]
+}
+
+#[derive(Serialize)]
+struct ClusterGeometry {
+    size: usize,
+    tiles: Vec<[[f64; 2]; 2]>, // Array of tile bounds
+}
+
+async fn get_square_cluster(State(state): State<AppState>) -> Json<SquareClusterResponse> {
+    let conn = state.db.lock().unwrap();
+    let tiles_response = tiles::get_visited_tiles(&conn);
+    
+    // Calculate Yard and Übersquadrat (independently from all tiles)
+    let max_cluster = tiles::calculate_max_cluster(&tiles_response.tiles);
+    let all_coords: Vec<(u32, u32)> = tiles_response.tiles.iter().map(|t| (t.x, t.y)).collect();
+    let max_square = tiles::calculate_max_square_from_coords(&all_coords);
+    
+    // Convert square to bounds
+    let square_bounds = if max_square.size > 0 {
+        let (lat_min, lon_min, _, _) = tiles::tile_to_bounds(
+            max_square.top_left_x, 
+            max_square.top_left_y + max_square.size - 1, 
+            tiles::TILE_ZOOM
+        );
+        let (_, _, lat_max, lon_max) = tiles::tile_to_bounds(
+            max_square.top_left_x + max_square.size - 1, 
+            max_square.top_left_y, 
+            tiles::TILE_ZOOM
+        );
+        [[lat_min, lon_min], [lat_max, lon_max]]
+    } else {
+        [[0.0, 0.0], [0.0, 0.0]]
+    };
+    
+    // Convert cluster tiles to bounds
+    let cluster_tiles: Vec<[[f64; 2]; 2]> = max_cluster.tiles
+        .iter()
+        .map(|(x, y)| {
+            let (lat_min, lon_min, lat_max, lon_max) = tiles::tile_to_bounds(*x, *y, tiles::TILE_ZOOM);
+            [[lat_min, lon_min], [lat_max, lon_max]]
+        })
+        .collect();
+    
+    Json(SquareClusterResponse {
+        max_square: SquareGeometry {
+            size: max_square.size,
+            bounds: square_bounds,
+        },
+        max_cluster: ClusterGeometry {
+            size: max_cluster.size,
+            tiles: cluster_tiles,
+        },
+        zoom: tiles::TILE_ZOOM,
     })
 }

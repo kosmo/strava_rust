@@ -334,3 +334,167 @@ pub fn get_visited_tiles(conn: &Connection) -> TilesResponse {
         total_count,
     }
 }
+
+/// Result for max square calculation
+#[derive(Serialize, Clone)]
+pub struct MaxSquareResult {
+    pub size: u32,
+    pub top_left_x: u32,
+    pub top_left_y: u32,
+}
+
+/// Result for Yard calculation  
+#[derive(Serialize, Clone)]
+pub struct MaxClusterResult {
+    pub size: usize,
+    pub tiles: Vec<(u32, u32)>,
+}
+
+/// Calculate the Yard:
+/// 1. Find all tiles that are surrounded on all 4 sides by other visited tiles
+/// 2. From those, find the largest connected cluster (BFS)
+pub fn calculate_max_cluster(tiles: &[TileInfo]) -> MaxClusterResult {
+    use std::collections::{HashSet, VecDeque};
+    
+    if tiles.is_empty() {
+        return MaxClusterResult { size: 0, tiles: vec![] };
+    }
+    
+    // Step 1: Find all tiles surrounded on all 4 sides
+    let all_visited: HashSet<(u32, u32)> = tiles.iter().map(|t| (t.x, t.y)).collect();
+    
+    let surrounded_tiles: HashSet<(u32, u32)> = tiles
+        .iter()
+        .filter(|t| {
+            let x = t.x;
+            let y = t.y;
+            
+            let has_left = x > 0 && all_visited.contains(&(x - 1, y));
+            let has_right = all_visited.contains(&(x + 1, y));
+            let has_up = y > 0 && all_visited.contains(&(x, y - 1));
+            let has_down = all_visited.contains(&(x, y + 1));
+            
+            has_left && has_right && has_up && has_down
+        })
+        .map(|t| (t.x, t.y))
+        .collect();
+    
+    if surrounded_tiles.is_empty() {
+        return MaxClusterResult { size: 0, tiles: vec![] };
+    }
+    
+    // Step 2: Find the largest connected cluster within surrounded tiles using BFS
+    let mut unvisited = surrounded_tiles.clone();
+    let mut max_cluster: Vec<(u32, u32)> = vec![];
+    
+    while !unvisited.is_empty() {
+        let start = *unvisited.iter().next().unwrap();
+        let mut queue = VecDeque::new();
+        let mut cluster = vec![];
+        
+        queue.push_back(start);
+        unvisited.remove(&start);
+        
+        while let Some((x, y)) = queue.pop_front() {
+            cluster.push((x, y));
+            
+            // Check 4 orthogonal neighbors (only within surrounded tiles)
+            let mut neighbors = Vec::new();
+            if x > 0 {
+                neighbors.push((x - 1, y));
+            }
+            neighbors.push((x + 1, y));
+            if y > 0 {
+                neighbors.push((x, y - 1));
+            }
+            neighbors.push((x, y + 1));
+            
+            for neighbor in neighbors {
+                if unvisited.remove(&neighbor) {
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        
+        if cluster.len() > max_cluster.len() {
+            max_cluster = cluster;
+        }
+    }
+    
+    MaxClusterResult {
+        size: max_cluster.len(),
+        tiles: max_cluster,
+    }
+}
+
+/// Calculate the largest square (Übersquadrat) within a set of tiles
+/// This should be called with the tiles from the max cluster (Yard)
+pub fn calculate_max_square_from_coords(tile_coords: &[(u32, u32)]) -> MaxSquareResult {
+    use std::collections::HashSet;
+    
+    if tile_coords.is_empty() {
+        return MaxSquareResult { size: 0, top_left_x: 0, top_left_y: 0 };
+    }
+    
+    // Create a set of tiles for O(1) lookup
+    let visited: HashSet<(u32, u32)> = tile_coords.iter().copied().collect();
+    
+    // Find bounds
+    let min_x = tile_coords.iter().map(|(x, _)| *x).min().unwrap();
+    let max_x = tile_coords.iter().map(|(x, _)| *x).max().unwrap();
+    let min_y = tile_coords.iter().map(|(_, y)| *y).min().unwrap();
+    let max_y = tile_coords.iter().map(|(_, y)| *y).max().unwrap();
+    
+    let width = (max_x - min_x + 1) as usize;
+    let height = (max_y - min_y + 1) as usize;
+    
+    // DP table for largest square ending at each cell
+    let mut dp = vec![vec![0u32; width]; height];
+    let mut max_size = 0u32;
+    let mut max_pos = (min_x, min_y);
+    
+    for y in 0..height {
+        for x in 0..width {
+            let abs_x = min_x + x as u32;
+            let abs_y = min_y + y as u32;
+            
+            if visited.contains(&(abs_x, abs_y)) {
+                if x == 0 || y == 0 {
+                    dp[y][x] = 1;
+                } else {
+                    dp[y][x] = dp[y-1][x].min(dp[y][x-1]).min(dp[y-1][x-1]) + 1;
+                }
+                
+                if dp[y][x] > max_size {
+                    max_size = dp[y][x];
+                    // Top-left corner of the square
+                    max_pos = (abs_x - max_size + 1, abs_y - max_size + 1);
+                }
+            }
+        }
+    }
+    
+    MaxSquareResult {
+        size: max_size,
+        top_left_x: max_pos.0,
+        top_left_y: max_pos.1,
+    }
+}
+
+/// Convert tile coordinates to lat/lon bounds
+pub fn tile_to_bounds(x: u32, y: u32, zoom: u32) -> (f64, f64, f64, f64) {
+    let n = 2_u32.pow(zoom) as f64;
+    let lon_min = x as f64 / n * 360.0 - 180.0;
+    let lon_max = (x + 1) as f64 / n * 360.0 - 180.0;
+
+    let lat_max = (std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n))
+        .sinh()
+        .atan()
+        .to_degrees();
+    let lat_min = (std::f64::consts::PI * (1.0 - 2.0 * (y + 1) as f64 / n))
+        .sinh()
+        .atan()
+        .to_degrees();
+
+    (lat_min, lon_min, lat_max, lon_max)
+}

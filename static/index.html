@@ -231,8 +231,18 @@
       <div class="tile-stats">
         <span class="count" id="tile-count">-</span> Tiles besucht (Zoom 14)<br>
         <span class="count" id="total-distance">-</span> km Gesamtdistanz<br>
-        <span id="activity-count">-</span> Aktivitäten
+        <span id="activity-count">-</span> Aktivitäten<br>
+        <span class="count" id="max-cluster">-</span> Yard<br>
+        <span class="count" id="max-square">-</span> Übersquadrat
       </div>
+      <label style="margin-top: 8px; display: block;">
+        <input type="checkbox" id="show-cluster" checked>
+        Yard anzeigen
+      </label>
+      <label>
+        <input type="checkbox" id="show-square" checked>
+        Übersquadrat anzeigen
+      </label>
     </div>
     <div class="controls">
       <button onclick="toggleAll(true)">Alle an</button>
@@ -308,11 +318,13 @@
       return `rgb(${r}, ${g}, ${b})`;
     }
 
-    // Load stats (total distance, activity count)
+    // Load stats (total distance, activity count, max square, max cluster)
     function loadStats() {
       fetch('/stats').then(r => r.json()).then(data => {
         document.getElementById('total-distance').textContent = data.total_distance_km.toFixed(2);
         document.getElementById('activity-count').textContent = data.activity_count;
+        document.getElementById('max-square').textContent = data.max_square + 'x' + data.max_square;
+        document.getElementById('max-cluster').textContent = data.max_cluster;
       }).catch(e => console.error('Failed to load stats:', e));
     }
 
@@ -359,6 +371,99 @@
         });
       });
     }
+
+    // Layer for max square and max cluster
+    const squareLayer = L.layerGroup().addTo(map);
+    const clusterLayer = L.layerGroup().addTo(map);
+
+    // Load and display max square and cluster outlines
+    function loadSquareCluster() {
+      fetch('/square-cluster').then(r => r.json()).then(data => {
+        squareLayer.clearLayers();
+        clusterLayer.clearLayers();
+
+        // Draw Yard (max cluster) outline (purple)
+        if (data.max_cluster.size > 0) {
+          // Draw each tile of the Yard
+          const clusterBounds = calculateClusterOutline(data.max_cluster.tiles);
+          clusterBounds.forEach(bounds => {
+            const clusterRect = L.rectangle(bounds, {
+              color: '#7b1fa2',
+              weight: 2,
+              fillColor: '#9c27b0',
+              fillOpacity: 0.45,
+              interactive: false
+            });
+            clusterLayer.addLayer(clusterRect);
+          });
+          
+          // Add a single tooltip for the Yard
+          if (data.max_cluster.tiles.length > 0) {
+            const firstTile = data.max_cluster.tiles[0];
+            const center = [
+              (firstTile[0][0] + firstTile[1][0]) / 2,
+              (firstTile[0][1] + firstTile[1][1]) / 2
+            ];
+            const marker = L.circleMarker(center, { radius: 0, opacity: 0 });
+            marker.bindTooltip(`Yard: ${data.max_cluster.size} Tiles`, {
+              permanent: false,
+              direction: 'top'
+            });
+            clusterLayer.addLayer(marker);
+          }
+        }
+
+        // Draw Übersquadrat outline (purple, brighter)
+        if (data.max_square.size > 0) {
+          const squareBounds = [
+            [data.max_square.bounds[0][0], data.max_square.bounds[0][1]],
+            [data.max_square.bounds[1][0], data.max_square.bounds[1][1]]
+          ];
+          const squareRect = L.rectangle(squareBounds, {
+            color: '#6a1b9a',
+            weight: 4,
+            fillColor: '#ab47bc',
+            fillOpacity: 0.5,
+            interactive: true
+          });
+          squareRect.bindTooltip(`Übersquadrat: ${data.max_square.size}x${data.max_square.size}`, {
+            sticky: true,
+            direction: 'top'
+          });
+          squareLayer.addLayer(squareRect);
+        }
+      }).catch(e => console.error('Failed to load square/cluster:', e));
+    }
+
+    // Helper function to calculate cluster outline as array of tile bounds
+    function calculateClusterOutline(tiles) {
+      return tiles.map(t => [[t[0][0], t[0][1]], [t[1][0], t[1][1]]]);
+    }
+
+    // Load square/cluster on page load
+    loadSquareCluster();
+
+    // Toggle square visibility
+    let squareVisible = true;
+    document.getElementById('show-square').addEventListener('change', (e) => {
+      squareVisible = e.target.checked;
+      if (squareVisible) {
+        squareLayer.addTo(map);
+      } else {
+        squareLayer.remove();
+      }
+    });
+
+    // Toggle cluster visibility
+    let clusterVisible = true;
+    document.getElementById('show-cluster').addEventListener('change', (e) => {
+      clusterVisible = e.target.checked;
+      if (clusterVisible) {
+        clusterLayer.addTo(map);
+      } else {
+        clusterLayer.remove();
+      }
+    });
 
     // Toggle tiles visibility
     document.getElementById('show-tiles').addEventListener('change', (e) => {
