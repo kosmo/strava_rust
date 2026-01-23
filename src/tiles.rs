@@ -6,6 +6,34 @@ use std::path::PathBuf;
 
 use crate::database;
 
+/// Calculate distance between two GPS coordinates using Haversine formula
+fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    const R: f64 = 6371.0; // Earth radius in km
+    let d_lat = (lat2 - lat1).to_radians();
+    let d_lon = (lon2 - lon1).to_radians();
+    let lat1_rad = lat1.to_radians();
+    let lat2_rad = lat2.to_radians();
+    
+    let a = (d_lat / 2.0).sin().powi(2) + lat1_rad.cos() * lat2_rad.cos() * (d_lon / 2.0).sin().powi(2);
+    let c = 2.0 * a.sqrt().asin();
+    R * c
+}
+
+/// Calculate total distance from a list of GPS points
+fn calculate_distance_from_points(points: &[(f64, f64, i64)]) -> f64 {
+    if points.len() < 2 {
+        return 0.0;
+    }
+    
+    let mut total = 0.0;
+    for window in points.windows(2) {
+        let (lat1, lon1, _) = window[0];
+        let (lat2, lon2, _) = window[1];
+        total += haversine_km(lat1, lon1, lat2, lon2);
+    }
+    total
+}
+
 #[derive(Serialize)]
 pub struct TileInfo {
     pub x: u32,
@@ -198,6 +226,9 @@ pub fn process_gpx_file(conn: &mut Connection, filename: &str, content: &str) ->
     
     let points = extract_all_points_with_time_from_gpx(content);
     let activity_title = extract_track_name(content).unwrap_or_else(|| filename.to_string());
+    
+    // Calculate distance from GPS points
+    let distance_km = calculate_distance_from_points(&points);
     let activity_id = extract_activity_id(filename).unwrap_or_default();
     
     // Collect tiles with their earliest timestamp
@@ -232,6 +263,13 @@ pub fn process_gpx_file(conn: &mut Connection, filename: &str, content: &str) ->
     
     // Mark file as processed
     database::mark_file_processed(conn, filename).map_err(|e| e.to_string())?;
+    
+    // Store activity with distance in imported_activities
+    if let Ok(activity_id_num) = activity_id.parse::<i64>() {
+        if let Err(e) = database::mark_activity_imported(conn, activity_id_num, Some(&activity_title), distance_km) {
+            eprintln!("Warning: Failed to mark activity {} as imported: {}", activity_id, e);
+        }
+    }
     
     Ok(count)
 }

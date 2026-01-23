@@ -54,6 +54,7 @@ pub async fn serve_map_server() -> Result<(), Box<dyn std::error::Error>> {
         .route("/tiles", get(list_visited_tiles))
         .route("/gemeinden.geojson", get(serve_gemeinden_geojson))
         .route("/fetch-activities", post(fetch_activities))
+        .route("/stats", get(get_stats))
         .route("/auth/start", get(auth_start))
         .route("/auth/callback", get(auth_callback))
         .route("/auth/status", get(auth_status))
@@ -442,7 +443,7 @@ async fn fetch_activities(
     }
 
     // Now export each activity
-    let mut imported_ids: Vec<(i64, Option<String>)> = Vec::new();
+    let mut imported_ids: Vec<(i64, Option<String>, f64)> = Vec::new();
     
     for act in &activities_to_import {
         let id = act.id;
@@ -454,12 +455,16 @@ async fn fetch_activities(
                 let file_path = out_dir.join(format!("activity_{}.gpx", id));
                 let start_date = act.start_date.as_deref();
                 let gpx = strava::build_gpx_xml(name, start_date, &streams);
-                if let Err(e) = std::fs::write(&file_path, gpx) {
+                
+                // Calculate distance from streams
+                let distance_km = strava::calculate_distance_from_streams(&streams);
+                
+                if let Err(e) = std::fs::write(&file_path, &gpx) {
                     eprintln!("Failed to write GPX file: {}", e);
                     continue;
                 }
-                println!("Saved GPX: {}", file_path.display());
-                imported_ids.push((id, act.name.clone()));
+                println!("Saved GPX: {} ({:.2} km)", file_path.display(), distance_km);
+                imported_ids.push((id, act.name.clone(), distance_km));
                 imported_count += 1;
             }
             Err(e) => {
@@ -472,8 +477,8 @@ async fn fetch_activities(
     // Mark activities as imported in database (after all awaits are done)
     if !imported_ids.is_empty() {
         if let Ok(conn) = database::init_db() {
-            for (id, name) in &imported_ids {
-                if let Err(e) = database::mark_activity_imported(&conn, *id, name.as_deref()) {
+            for (id, name, distance_km) in &imported_ids {
+                if let Err(e) = database::mark_activity_imported(&conn, *id, name.as_deref(), *distance_km) {
                     eprintln!("Warning: Failed to mark activity {} as imported: {}", id, e);
                 }
             }
@@ -662,5 +667,25 @@ async fn auth_status(State(state): State<AppState>) -> Json<AuthStatusResponse> 
     let token_guard = state.access_token.read().unwrap();
     Json(AuthStatusResponse {
         authenticated: token_guard.is_some(),
+    })
+}
+
+#[derive(Serialize)]
+struct StatsResponse {
+    total_distance_km: f64,
+    activity_count: usize,
+}
+
+async fn get_stats(State(state): State<AppState>) -> Json<StatsResponse> {
+    let conn = state.db.lock().unwrap();
+    
+    let total_distance = database::get_total_distance(&conn).unwrap_or(0.0);
+    let activity_count = database::get_imported_activity_ids(&conn)
+        .map(|ids| ids.len())
+        .unwrap_or(0);
+    
+    Json(StatsResponse {
+        total_distance_km: (total_distance * 100.0).round() / 100.0,
+        activity_count,
     })
 }

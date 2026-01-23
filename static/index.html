@@ -229,7 +229,9 @@
         Kreisgrenzen anzeigen
       </label>
       <div class="tile-stats">
-        <span class="count" id="tile-count">-</span> Tiles besucht (Zoom 14)
+        <span class="count" id="tile-count">-</span> Tiles besucht (Zoom 14)<br>
+        <span class="count" id="total-distance">-</span> km Gesamtdistanz<br>
+        <span id="activity-count">-</span> Aktivitäten
       </div>
     </div>
     <div class="controls">
@@ -305,6 +307,17 @@
 
       return `rgb(${r}, ${g}, ${b})`;
     }
+
+    // Load stats (total distance, activity count)
+    function loadStats() {
+      fetch('/stats').then(r => r.json()).then(data => {
+        document.getElementById('total-distance').textContent = data.total_distance_km.toFixed(2);
+        document.getElementById('activity-count').textContent = data.activity_count;
+      }).catch(e => console.error('Failed to load stats:', e));
+    }
+
+    // Load stats on page load
+    loadStats();
 
     // Load and display visited tiles
     function loadTiles() {

@@ -251,12 +251,16 @@ pub async fn export_activities_as_gpx(
                 let file_path = out_dir.join(format!("activity_{}.gpx", id));
                 let start_date = act.start_date.as_deref();
                 let gpx = build_gpx_xml(name, start_date, &streams);
+                
+                // Calculate distance from streams
+                let distance_km = calculate_distance_from_streams(&streams);
+                
                 fs::write(&file_path, gpx)?;
-                println!("Saved GPX: {}", file_path.display());
+                println!("Saved GPX: {} ({:.2} km)", file_path.display(), distance_km);
                 
                 // Mark activity as imported in database
                 if let Some(conn) = db_conn {
-                    if let Err(e) = crate::database::mark_activity_imported(conn, id, act.name.as_deref()) {
+                    if let Err(e) = crate::database::mark_activity_imported(conn, id, act.name.as_deref(), distance_km) {
                         eprintln!("Warning: Failed to mark activity {} as imported: {}", id, e);
                     }
                 }
@@ -334,4 +338,37 @@ fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+/// Calculate distance in km from activity streams
+pub fn calculate_distance_from_streams(streams: &StreamSet) -> f64 {
+    let latlng = match &streams.latlng {
+        Some(l) => &l.data,
+        None => return 0.0,
+    };
+    
+    if latlng.len() < 2 {
+        return 0.0;
+    }
+    
+    let mut total_km = 0.0;
+    for i in 1..latlng.len() {
+        let p1 = (latlng[i - 1][0], latlng[i - 1][1]);
+        let p2 = (latlng[i][0], latlng[i][1]);
+        total_km += haversine_km(p1, p2);
+    }
+    
+    (total_km * 100.0).round() / 100.0
+}
+
+fn haversine_km(p1: (f64, f64), p2: (f64, f64)) -> f64 {
+    let r = 6371.0; // Earth radius in km
+    let d_lat = (p2.0 - p1.0).to_radians();
+    let d_lon = (p2.1 - p1.1).to_radians();
+    let lat1 = p1.0.to_radians();
+    let lat2 = p2.0.to_radians();
+
+    let a = (d_lat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (d_lon / 2.0).sin().powi(2);
+    let c = 2.0 * a.sqrt().asin();
+    r * c
 }
