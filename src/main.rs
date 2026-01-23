@@ -31,6 +31,10 @@ struct Cli {
     /// Start a web server to display GPX files on a Leaflet map
     #[arg(long)]
     serve_map: bool,
+
+    /// Fetch all activities, including already imported ones
+    #[arg(long)]
+    fetch_all: bool,
 }
 
 #[tokio::main]
@@ -194,12 +198,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
     if activities.is_empty() {
+        println!("No activities found.");
         return Ok(());
     }
 
+    // Initialize database for tracking imported activities
+    let db_conn = match database::init_db() {
+        Ok(conn) => Some(conn),
+        Err(e) => {
+            eprintln!("Warning: Could not initialize database: {}. Proceeding without import tracking.", e);
+            None
+        }
+    };
+
     // Export activities as GPX files
     let out_dir = PathBuf::from("gpx");
-    strava::export_activities_as_gpx(&client, &token_value, &activities, &out_dir).await?;
+    strava::export_activities_as_gpx(
+        &client,
+        &token_value,
+        &activities,
+        &out_dir,
+        db_conn.as_ref(),
+        args.fetch_all,
+    ).await?;
 
     Ok(())
 }

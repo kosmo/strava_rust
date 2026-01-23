@@ -30,6 +30,16 @@ pub fn init_db() -> Result<Connection> {
         [],
     )?;
     
+    // Create table to track imported Strava activities
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS imported_activities (
+            activity_id INTEGER PRIMARY KEY,
+            activity_name TEXT,
+            imported_at INTEGER NOT NULL
+        )",
+        [],
+    )?;
+    
     Ok(conn)
 }
 
@@ -137,4 +147,35 @@ pub struct TileRecord {
     pub activity_id: Option<String>,
     pub activity_title: Option<String>,
     pub gpx_filename: Option<String>,
+}
+
+/// Check if an activity has already been imported from Strava
+pub fn is_activity_imported(conn: &Connection, activity_id: i64) -> Result<bool> {
+    let count: i32 = conn.query_row(
+        "SELECT COUNT(*) FROM imported_activities WHERE activity_id = ?1",
+        params![activity_id],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// Mark an activity as imported from Strava
+pub fn mark_activity_imported(conn: &Connection, activity_id: i64, activity_name: Option<&str>) -> Result<()> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    
+    conn.execute(
+        "INSERT OR IGNORE INTO imported_activities (activity_id, activity_name, imported_at) VALUES (?1, ?2, ?3)",
+        params![activity_id, activity_name, now],
+    )?;
+    Ok(())
+}
+
+/// Get all imported activity IDs
+pub fn get_imported_activity_ids(conn: &Connection) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare("SELECT activity_id FROM imported_activities")?;
+    let ids = stmt.query_map([], |row| row.get(0))?;
+    ids.collect()
 }

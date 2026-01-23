@@ -186,17 +186,35 @@ pub async fn get_activity_streams(
 }
 
 /// Export activities as GPX files to the specified directory
+/// If fetch_all is false, already imported activities are skipped
 pub async fn export_activities_as_gpx(
     client: &reqwest::Client,
     access_token: &str,
     activities: &[ActivitySummary],
     out_dir: &PathBuf,
+    db_conn: Option<&rusqlite::Connection>,
+    fetch_all: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(out_dir)?;
+
+    let mut imported_count = 0;
+    let mut skipped_count = 0;
 
     for act in activities.iter() {
         let id = act.id;
         let name = act.name.as_deref().unwrap_or("");
+        
+        // Check if activity was already imported (unless --fetch-all is set)
+        if !fetch_all {
+            if let Some(conn) = db_conn {
+                if crate::database::is_activity_imported(conn, id).unwrap_or(false) {
+                    println!("Skipping already imported activity {} - {}", id, name);
+                    skipped_count += 1;
+                    continue;
+                }
+            }
+        }
+
         println!("Exporting GPX for activity {} - {}", id, name);
 
         match get_activity_streams(client, access_token, id).await {
@@ -206,6 +224,14 @@ pub async fn export_activities_as_gpx(
                 let gpx = build_gpx_xml(name, start_date, &streams);
                 fs::write(&file_path, gpx)?;
                 println!("Saved GPX: {}", file_path.display());
+                
+                // Mark activity as imported in database
+                if let Some(conn) = db_conn {
+                    if let Err(e) = crate::database::mark_activity_imported(conn, id, act.name.as_deref()) {
+                        eprintln!("Warning: Failed to mark activity {} as imported: {}", id, e);
+                    }
+                }
+                imported_count += 1;
             }
             Err(e) => {
                 eprintln!("Failed to get streams for activity {}: {}", id, e);
@@ -214,6 +240,7 @@ pub async fn export_activities_as_gpx(
         }
     }
 
+    println!("\nImport summary: {} imported, {} skipped (already imported)", imported_count, skipped_count);
     Ok(())
 }
 
