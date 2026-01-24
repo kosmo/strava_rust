@@ -35,6 +35,35 @@ fn calculate_distance_from_points(points: &[(f64, f64, i64)]) -> f64 {
     total
 }
 
+/// Calculate elevation gain from GPX content
+fn calculate_elevation_gain_from_gpx(content: &str) -> i32 {
+    let mut elevations: Vec<f64> = Vec::new();
+
+    // Extract all elevation values from <ele> tags
+    let mut remaining = content;
+    while let Some(start) = remaining.find("<ele>") {
+        let after_tag = &remaining[start + 5..];
+        if let Some(end) = after_tag.find("</ele>") {
+            let ele_str = &after_tag[..end];
+            if let Ok(ele) = ele_str.trim().parse::<f64>() {
+                elevations.push(ele);
+            }
+        }
+        remaining = &remaining[start + 5..];
+    }
+
+    // Sum only positive elevation changes (climbing)
+    let mut total_gain = 0.0;
+    for i in 1..elevations.len() {
+        let diff = elevations[i] - elevations[i - 1];
+        if diff > 0.0 {
+            total_gain += diff;
+        }
+    }
+
+    total_gain.round() as i32
+}
+
 #[derive(Serialize)]
 pub struct TileInfo {
     pub x: u32,
@@ -240,8 +269,9 @@ pub fn process_gpx_file(
     let points = extract_all_points_with_time_from_gpx(content);
     let activity_title = extract_track_name(content).unwrap_or_else(|| filename.to_string());
 
-    // Calculate distance from GPS points
+    // Calculate distance and elevation from GPS points / GPX content
     let distance_km = calculate_distance_from_points(&points);
+    let elevation_gain_m = calculate_elevation_gain_from_gpx(content);
     let activity_id = extract_activity_id(filename).unwrap_or_default();
 
     // Collect tiles with their earliest timestamp
@@ -284,6 +314,7 @@ pub fn process_gpx_file(
             activity_id_num,
             Some(&activity_title),
             distance_km,
+            elevation_gain_m,
         ) {
             eprintln!(
                 "Warning: Failed to mark activity {} as imported: {}",

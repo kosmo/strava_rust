@@ -30,6 +30,7 @@ struct GpxFileInfo {
     filename: String,
     modified: u64, // Unix timestamp in seconds
     distance_km: f64,
+    elevation_gain_m: i32,
 }
 
 pub async fn serve_map_server() -> Result<(), Box<dyn std::error::Error>> {
@@ -188,11 +189,12 @@ async fn list_gpx_files() -> Json<Vec<GpxFileInfo>> {
             if let Some(name) = entry.file_name().to_str() {
                 if name.ends_with(".gpx") {
                     let path = entry.path();
-                    let (modified, distance_km) = parse_gpx_info(&path);
+                    let (modified, distance_km, elevation_gain_m) = parse_gpx_info(&path);
                     files.push(GpxFileInfo {
                         filename: name.to_string(),
                         modified,
                         distance_km,
+                        elevation_gain_m,
                     });
                 }
             }
@@ -203,16 +205,17 @@ async fn list_gpx_files() -> Json<Vec<GpxFileInfo>> {
     Json(files)
 }
 
-fn parse_gpx_info(path: &PathBuf) -> (u64, f64) {
+fn parse_gpx_info(path: &PathBuf) -> (u64, f64, i32) {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
-        Err(_) => return (0, 0.0),
+        Err(_) => return (0, 0.0, 0),
     };
 
     let timestamp = extract_gpx_time(&content);
     let distance = calculate_distance_from_content(&content);
+    let elevation_gain = calculate_elevation_gain(&content);
 
-    (timestamp, distance)
+    (timestamp, distance, elevation_gain)
 }
 
 fn extract_gpx_time(content: &str) -> u64 {
@@ -306,6 +309,34 @@ fn calculate_distance_from_content(content: &str) -> f64 {
         total_km += haversine_km(points[i - 1], points[i]);
     }
     (total_km * 100.0).round() / 100.0
+}
+
+fn calculate_elevation_gain(content: &str) -> i32 {
+    let mut elevations: Vec<f64> = Vec::new();
+
+    // Extract all elevation values from <ele> tags
+    let mut remaining = content;
+    while let Some(start) = remaining.find("<ele>") {
+        let after_tag = &remaining[start + 5..];
+        if let Some(end) = after_tag.find("</ele>") {
+            let ele_str = &after_tag[..end];
+            if let Ok(ele) = ele_str.trim().parse::<f64>() {
+                elevations.push(ele);
+            }
+        }
+        remaining = &remaining[start + 5..];
+    }
+
+    // Sum only positive elevation changes (climbing)
+    let mut total_gain = 0.0;
+    for i in 1..elevations.len() {
+        let diff = elevations[i] - elevations[i - 1];
+        if diff > 0.0 {
+            total_gain += diff;
+        }
+    }
+
+    total_gain.round() as i32
 }
 
 fn extract_attr(s: &str, attr: &str) -> Option<f64> {
@@ -553,7 +584,7 @@ async fn fetch_activities(
     }
 
     // Now export each activity
-    let mut imported_ids: Vec<(i64, Option<String>, f64)> = Vec::new();
+    let mut imported_ids: Vec<(i64, Option<String>, f64, i32)> = Vec::new();
 
     for act in &activities_to_import {
         let id = act.id;
@@ -566,15 +597,21 @@ async fn fetch_activities(
                 let start_date = act.start_date.as_deref();
                 let gpx = strava::build_gpx_xml(name, start_date, &streams);
 
-                // Calculate distance from streams
+                // Calculate distance and elevation from streams
                 let distance_km = strava::calculate_distance_from_streams(&streams);
+                let elevation_gain_m = strava::calculate_elevation_gain_from_streams(&streams);
 
                 if let Err(e) = std::fs::write(&file_path, &gpx) {
                     eprintln!("Failed to write GPX file: {}", e);
                     continue;
                 }
-                println!("Saved GPX: {} ({:.2} km)", file_path.display(), distance_km);
-                imported_ids.push((id, act.name.clone(), distance_km));
+                println!(
+                    "Saved GPX: {} ({:.2} km, {} hm)",
+                    file_path.display(),
+                    distance_km,
+                    elevation_gain_m
+                );
+                imported_ids.push((id, act.name.clone(), distance_km, elevation_gain_m));
                 imported_count += 1;
             }
             Err(e) => {
@@ -587,10 +624,14 @@ async fn fetch_activities(
     // Mark activities as imported in database (after all awaits are done)
     if !imported_ids.is_empty() {
         if let Ok(conn) = database::init_db() {
-            for (id, name, distance_km) in &imported_ids {
-                if let Err(e) =
-                    database::mark_activity_imported(&conn, *id, name.as_deref(), *distance_km)
-                {
+            for (id, name, distance_km, elevation_gain_m) in &imported_ids {
+                if let Err(e) = database::mark_activity_imported(
+                    &conn,
+                    *id,
+                    name.as_deref(),
+                    *distance_km,
+                    *elevation_gain_m,
+                ) {
                     eprintln!("Warning: Failed to mark activity {} as imported: {}", id, e);
                 }
             }
@@ -802,6 +843,7 @@ async fn auth_status(State(state): State<AppState>) -> Json<AuthStatusResponse> 
 #[derive(Serialize)]
 struct StatsResponse {
     total_distance_km: f64,
+    total_elevation_m: i64,
     activity_count: usize,
     max_square: u32,
     max_cluster: usize,
@@ -812,6 +854,7 @@ async fn get_stats(State(state): State<AppState>) -> Json<StatsResponse> {
     let conn = state.db.lock().unwrap();
 
     let total_distance = database::get_total_distance(&conn).unwrap_or(0.0);
+    let total_elevation = database::get_total_elevation_gain(&conn).unwrap_or(0);
     let activity_count = database::get_imported_activity_ids(&conn)
         .map(|ids| ids.len())
         .unwrap_or(0);
@@ -825,6 +868,7 @@ async fn get_stats(State(state): State<AppState>) -> Json<StatsResponse> {
 
     Json(StatsResponse {
         total_distance_km: (total_distance * 100.0).round() / 100.0,
+        total_elevation_m: total_elevation,
         activity_count,
         max_square: max_square.size,
         max_cluster: max_cluster.size,

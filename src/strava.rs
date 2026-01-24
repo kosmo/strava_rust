@@ -232,7 +232,7 @@ pub async fn export_activities_as_gpx(
     for act in activities.iter() {
         let id = act.id;
         let name = act.name.as_deref().unwrap_or("");
-        
+
         // Check if activity was already imported (unless --fetch-all is set)
         if !fetch_all {
             if let Some(conn) = db_conn {
@@ -251,16 +251,28 @@ pub async fn export_activities_as_gpx(
                 let file_path = out_dir.join(format!("activity_{}.gpx", id));
                 let start_date = act.start_date.as_deref();
                 let gpx = build_gpx_xml(name, start_date, &streams);
-                
-                // Calculate distance from streams
+
+                // Calculate distance and elevation from streams
                 let distance_km = calculate_distance_from_streams(&streams);
-                
+                let elevation_gain_m = calculate_elevation_gain_from_streams(&streams);
+
                 fs::write(&file_path, gpx)?;
-                println!("Saved GPX: {} ({:.2} km)", file_path.display(), distance_km);
-                
+                println!(
+                    "Saved GPX: {} ({:.2} km, {} hm)",
+                    file_path.display(),
+                    distance_km,
+                    elevation_gain_m
+                );
+
                 // Mark activity as imported in database
                 if let Some(conn) = db_conn {
-                    if let Err(e) = crate::database::mark_activity_imported(conn, id, act.name.as_deref(), distance_km) {
+                    if let Err(e) = crate::database::mark_activity_imported(
+                        conn,
+                        id,
+                        act.name.as_deref(),
+                        distance_km,
+                        elevation_gain_m,
+                    ) {
                         eprintln!("Warning: Failed to mark activity {} as imported: {}", id, e);
                     }
                 }
@@ -273,7 +285,10 @@ pub async fn export_activities_as_gpx(
         }
     }
 
-    println!("\nImport summary: {} imported, {} skipped (already imported)", imported_count, skipped_count);
+    println!(
+        "\nImport summary: {} imported, {} skipped (already imported)",
+        imported_count, skipped_count
+    );
     Ok((imported_count, skipped_count))
 }
 
@@ -346,19 +361,41 @@ pub fn calculate_distance_from_streams(streams: &StreamSet) -> f64 {
         Some(l) => &l.data,
         None => return 0.0,
     };
-    
+
     if latlng.len() < 2 {
         return 0.0;
     }
-    
+
     let mut total_km = 0.0;
     for i in 1..latlng.len() {
         let p1 = (latlng[i - 1][0], latlng[i - 1][1]);
         let p2 = (latlng[i][0], latlng[i][1]);
         total_km += haversine_km(p1, p2);
     }
-    
+
     (total_km * 100.0).round() / 100.0
+}
+
+/// Calculate elevation gain in meters from activity streams
+pub fn calculate_elevation_gain_from_streams(streams: &StreamSet) -> i32 {
+    let altitude = match &streams.altitude {
+        Some(a) => &a.data,
+        None => return 0,
+    };
+
+    if altitude.len() < 2 {
+        return 0;
+    }
+
+    let mut total_gain = 0.0;
+    for i in 1..altitude.len() {
+        let diff = altitude[i] - altitude[i - 1];
+        if diff > 0.0 {
+            total_gain += diff;
+        }
+    }
+
+    total_gain.round() as i32
 }
 
 fn haversine_km(p1: (f64, f64), p2: (f64, f64)) -> f64 {

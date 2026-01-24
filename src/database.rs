@@ -36,7 +36,8 @@ pub fn init_db() -> Result<Connection> {
             activity_id INTEGER PRIMARY KEY,
             activity_name TEXT,
             imported_at INTEGER NOT NULL,
-            distance_km REAL DEFAULT 0.0
+            distance_km REAL DEFAULT 0.0,
+            elevation_gain_m INTEGER DEFAULT 0
         )",
         [],
     )?;
@@ -44,6 +45,12 @@ pub fn init_db() -> Result<Connection> {
     // Migration: Add distance_km column if it doesn't exist (for existing databases)
     let _ = conn.execute(
         "ALTER TABLE imported_activities ADD COLUMN distance_km REAL DEFAULT 0.0",
+        [],
+    );
+
+    // Migration: Add elevation_gain_m column if it doesn't exist (for existing databases)
+    let _ = conn.execute(
+        "ALTER TABLE imported_activities ADD COLUMN elevation_gain_m INTEGER DEFAULT 0",
         [],
     );
 
@@ -167,6 +174,7 @@ pub fn mark_activity_imported(
     activity_id: i64,
     activity_name: Option<&str>,
     distance_km: f64,
+    elevation_gain_m: i32,
 ) -> Result<()> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -174,8 +182,8 @@ pub fn mark_activity_imported(
         .as_secs() as i64;
 
     conn.execute(
-        "INSERT OR IGNORE INTO imported_activities (activity_id, activity_name, imported_at, distance_km) VALUES (?1, ?2, ?3, ?4)",
-        params![activity_id, activity_name, now, distance_km],
+        "INSERT OR IGNORE INTO imported_activities (activity_id, activity_name, imported_at, distance_km, elevation_gain_m) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![activity_id, activity_name, now, distance_km, elevation_gain_m],
     )?;
     Ok(())
 }
@@ -191,6 +199,16 @@ pub fn get_imported_activity_ids(conn: &Connection) -> Result<Vec<i64>> {
 pub fn get_total_distance(conn: &Connection) -> Result<f64> {
     let total: f64 = conn.query_row(
         "SELECT COALESCE(SUM(distance_km), 0.0) FROM imported_activities",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(total)
+}
+
+/// Get total elevation gain of all imported activities in meters
+pub fn get_total_elevation_gain(conn: &Connection) -> Result<i64> {
+    let total: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(elevation_gain_m), 0) FROM imported_activities",
         [],
         |row| row.get(0),
     )?;

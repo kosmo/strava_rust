@@ -247,6 +247,7 @@
       <div class="tile-stats">
         <span class="count" id="tile-count">-</span> Tiles besucht (Zoom 14)<br>
         <span class="count" id="total-distance">-</span> km Gesamtdistanz<br>
+        <span class="count" id="total-elevation">-</span> hm Gesamt<br>
         <span id="activity-count">-</span> Aktivitäten<br>
         <span class="count" id="eddington">-</span> Eddington (km)<br>
         <span class="count" id="max-cluster">-</span> Yard<br>
@@ -357,6 +358,7 @@
     function loadStats() {
       fetch('/stats').then(r => r.json()).then(data => {
         document.getElementById('total-distance').textContent = data.total_distance_km.toFixed(2);
+        document.getElementById('total-elevation').textContent = data.total_elevation_m.toLocaleString('de-DE');
         document.getElementById('activity-count').textContent = data.activity_count;
         document.getElementById('eddington').textContent = data.eddington;
         document.getElementById('max-square').textContent = data.max_square + 'x' + data.max_square;
@@ -1476,7 +1478,8 @@
         item.className = 'track-item';
         const dateStr = formatDate(fileInfo.modified);
         const distStr = fileInfo.distance_km.toFixed(2) + ' km';
-        item.innerHTML = '<input type="checkbox" id="chk-' + file + '" checked><span class="track-color" style="background:' + color + '"></span><span class="track-name">' + dateStr + '</span><span class="track-distance">' + distStr + '</span>';
+        const eleStr = fileInfo.elevation_gain_m + ' hm';
+        item.innerHTML = '<input type="checkbox" id="chk-' + file + '" checked><span class="track-color" style="background:' + color + '"></span><span class="track-name">' + dateStr + '</span><span class="track-distance">' + distStr + ' / ' + eleStr + '</span>';
         item.querySelector('input').addEventListener('change', (e) => toggleTrack(file, e.target.checked));
         listEl.appendChild(item);
 
