@@ -232,6 +232,7 @@
         <span class="count" id="tile-count">-</span> Tiles besucht (Zoom 14)<br>
         <span class="count" id="total-distance">-</span> km Gesamtdistanz<br>
         <span id="activity-count">-</span> Aktivitäten<br>
+        <span class="count" id="eddington">-</span> Eddington (km)<br>
         <span class="count" id="max-cluster">-</span> Yard<br>
         <span class="count" id="max-square">-</span> Übersquadrat
       </div>
@@ -318,11 +319,12 @@
       return `rgb(${r}, ${g}, ${b})`;
     }
 
-    // Load stats (total distance, activity count, max square, max cluster)
+    // Load stats (total distance, activity count, eddington, max square, max cluster)
     function loadStats() {
       fetch('/stats').then(r => r.json()).then(data => {
         document.getElementById('total-distance').textContent = data.total_distance_km.toFixed(2);
         document.getElementById('activity-count').textContent = data.activity_count;
+        document.getElementById('eddington').textContent = data.eddington;
         document.getElementById('max-square').textContent = data.max_square + 'x' + data.max_square;
         document.getElementById('max-cluster').textContent = data.max_cluster;
       }).catch(e => console.error('Failed to load stats:', e));

@@ -677,6 +677,7 @@ struct StatsResponse {
     activity_count: usize,
     max_square: u32,
     max_cluster: usize,
+    eddington: u32,
 }
 
 async fn get_stats(State(state): State<AppState>) -> Json<StatsResponse> {
@@ -686,6 +687,7 @@ async fn get_stats(State(state): State<AppState>) -> Json<StatsResponse> {
     let activity_count = database::get_imported_activity_ids(&conn)
         .map(|ids| ids.len())
         .unwrap_or(0);
+    let eddington = database::calculate_eddington_number(&conn).unwrap_or(0);
     
     // Calculate Yard and Übersquadrat (independently from all tiles)
     let tiles_response = tiles::get_visited_tiles(&conn);
@@ -698,6 +700,7 @@ async fn get_stats(State(state): State<AppState>) -> Json<StatsResponse> {
         activity_count,
         max_square: max_square.size,
         max_cluster: max_cluster.size,
+        eddington,
     })
 }
 
