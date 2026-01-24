@@ -236,6 +236,14 @@
         <input type="checkbox" id="show-sachsen-kreise" checked>
         Kreisgrenzen (Sachsen) anzeigen
       </label>
+      <label>
+        <input type="checkbox" id="show-thueringen-gemeinden" checked>
+        Gemeindegrenzen (Thüringen) anzeigen
+      </label>
+      <label>
+        <input type="checkbox" id="show-thueringen-kreise" checked>
+        Kreisgrenzen (Thüringen) anzeigen
+      </label>
       <div class="tile-stats">
         <span class="count" id="tile-count">-</span> Tiles besucht (Zoom 14)<br>
         <span class="count" id="total-distance">-</span> km Gesamtdistanz<br>
@@ -284,12 +292,21 @@
     map.createPane('sachsenKreisePane');
     map.getPane('sachsenKreisePane').style.zIndex = 405;
 
+    // Panes for Thüringen layers
+    map.createPane('thueringenGemeindenPane');
+    map.getPane('thueringenGemeindenPane').style.zIndex = 356;
+
+    map.createPane('thueringenKreisePane');
+    map.getPane('thueringenKreisePane').style.zIndex = 406;
+
     const tracks = {};
     const tilesLayer = L.layerGroup().addTo(map);
     const gemeindenLayer = L.layerGroup().addTo(map);
     const kreiseLayer = L.layerGroup().addTo(map);
     const sachsenGemeindenLayer = L.layerGroup().addTo(map);
     const sachsenKreiseLayer = L.layerGroup().addTo(map);
+    const thueringenGemeindenLayer = L.layerGroup().addTo(map);
+    const thueringenKreiseLayer = L.layerGroup().addTo(map);
     let tilesVisible = true;
 
     // Convert tile coordinates to lat/lon bounds
@@ -538,6 +555,28 @@
       }
     });
 
+    // Toggle Thüringen Gemeinden visibility
+    let thueringenGemeindenVisible = true;
+    document.getElementById('show-thueringen-gemeinden').addEventListener('change', (e) => {
+      thueringenGemeindenVisible = e.target.checked;
+      if (thueringenGemeindenVisible) {
+        thueringenGemeindenLayer.addTo(map);
+      } else {
+        thueringenGemeindenLayer.remove();
+      }
+    });
+
+    // Toggle Thüringen Kreise visibility
+    let thueringenKreiseVisible = true;
+    document.getElementById('show-thueringen-kreise').addEventListener('change', (e) => {
+      thueringenKreiseVisible = e.target.checked;
+      if (thueringenKreiseVisible) {
+        thueringenKreiseLayer.addTo(map);
+      } else {
+        thueringenKreiseLayer.remove();
+      }
+    });
+
     // Store tiles globally for gemeinde calculation
     let allTiles = [];
     const TILE_ZOOM = 14;
@@ -639,6 +678,8 @@
     let kreiseData = [];
     let sachsenGemeindenData = [];
     let sachsenKreiseData = [];
+    let thueringenGemeindenData = [];
+    let thueringenKreiseData = [];
 
     // Find which kreis a point belongs to (using kreiseData)
     function findKreisForPoint(lat, lon) {
@@ -904,6 +945,124 @@
         .catch(err => console.error('Error loading Sachsen Gemeinden:', err));
     }
 
+    // Load Thüringen boundaries (Gemeinden and Kreise)
+    function loadThueringenBoundaries() {
+      const visitedTileSet = new Set(allTiles.map(t => `${t.x},${t.y}`));
+
+      // Load Thüringen Kreise first
+      fetch('/thueringen_kreise.geojson')
+        .then(r => r.json())
+        .then(geojson => {
+          geojson.features.forEach(feature => {
+            const stats = getTilesInGeometry(feature.geometry, visitedTileSet);
+            const name = feature.properties.LK || 'Unbekannt';
+            const percent = stats.totalTiles > 0
+              ? Math.round(stats.visitedTiles / stats.totalTiles * 100)
+              : 0;
+
+            // Store for tile lookup
+            thueringenKreiseData.push({
+              name: name,
+              geometry: feature.geometry,
+              stats: stats,
+              percent: percent
+            });
+
+            const layer = L.geoJSON({ type: 'Feature', geometry: feature.geometry }, {
+              pane: 'thueringenKreisePane',
+              style: {
+                color: '#006400',
+                weight: 3,
+                fillColor: '#006400',
+                fillOpacity: 0.01,
+                interactive: true
+              }
+            });
+
+            let tooltipContent = `<div class="gemeinde-tooltip">`;
+            tooltipContent += `<b>Kreis (Thüringen): ${name}</b><br>`;
+            tooltipContent += `Tiles: ${stats.visitedTiles} / ${stats.totalTiles}`;
+            if (stats.totalTiles > 0) {
+              tooltipContent += ` (${percent}%)`;
+            }
+            tooltipContent += `</div>`;
+
+            layer.bindTooltip(tooltipContent, {
+              sticky: true,
+              direction: 'top'
+            });
+
+            thueringenKreiseLayer.addLayer(layer);
+          });
+        })
+        .catch(err => console.error('Error loading Thüringen Kreise:', err));
+
+      // Load Thüringen Gemeinden
+      fetch('/thueringen_gemeinden.geojson')
+        .then(r => r.json())
+        .then(geojson => {
+          geojson.features.forEach(feature => {
+            const stats = getTilesInGeometry(feature.geometry, visitedTileSet);
+            const name = feature.properties.GMD || 'Unbekannt';
+            const kreisName = feature.properties.LK || '';
+            const percent = stats.totalTiles > 0
+              ? Math.round(stats.visitedTiles / stats.totalTiles * 100)
+              : 0;
+
+            // Store for tile lookup
+            thueringenGemeindenData.push({
+              name: name,
+              kreisName: kreisName,
+              geometry: feature.geometry,
+              stats: stats,
+              percent: percent
+            });
+
+            // Color based on completion
+            let fillColor = '#ff6b6b';
+            if (percent >= 100) {
+              fillColor = '#51cf66';
+            } else if (percent >= 50) {
+              fillColor = '#ffd43b';
+            } else if (percent >= 25) {
+              fillColor = '#ff922b';
+            }
+
+            const layer = L.geoJSON({ type: 'Feature', geometry: feature.geometry }, {
+              pane: 'thueringenGemeindenPane',
+              style: {
+                color: '#333',
+                weight: 1,
+                fillColor: fillColor,
+                fillOpacity: 0.25,
+                interactive: true
+              }
+            });
+
+            let tooltipContent = `<div class="gemeinde-tooltip">`;
+            tooltipContent += `<b>${name}</b>`;
+            tooltipContent += `<br>`;
+            tooltipContent += `Tiles: ${stats.visitedTiles} / ${stats.totalTiles}`;
+            if (stats.totalTiles > 0) {
+              tooltipContent += ` (${percent}%)`;
+            }
+            if (kreisName) {
+              tooltipContent += `<hr style="margin: 4px 0; border: none; border-top: 1px solid #ccc;">`;
+              tooltipContent += `Kreis: ${kreisName}`;
+            }
+            tooltipContent += `</div>`;
+
+            layer.bindTooltip(tooltipContent, {
+              sticky: true,
+              direction: 'top'
+            });
+
+            thueringenGemeindenLayer.addLayer(layer);
+          });
+        })
+        .catch(err => console.error('Error loading Thüringen Gemeinden:', err));
+    }
+
     // Find which kreis a tile belongs to
     function findKreisForTile(tileX, tileY) {
       const center = tileCenterToLatLon(tileX, tileY, TILE_ZOOM);
@@ -941,6 +1100,28 @@
     function findSachsenGemeindeForTile(tileX, tileY) {
       const center = tileCenterToLatLon(tileX, tileY, TILE_ZOOM);
       for (const gemeinde of sachsenGemeindenData) {
+        if (pointInGeometry(center, gemeinde.geometry)) {
+          return gemeinde;
+        }
+      }
+      return null;
+    }
+
+    // Find which Thüringen kreis a tile belongs to
+    function findThueringenKreisForTile(tileX, tileY) {
+      const center = tileCenterToLatLon(tileX, tileY, TILE_ZOOM);
+      for (const kreis of thueringenKreiseData) {
+        if (pointInGeometry(center, kreis.geometry)) {
+          return kreis;
+        }
+      }
+      return null;
+    }
+
+    // Find which Thüringen gemeinde a tile belongs to
+    function findThueringenGemeindeForTile(tileX, tileY) {
+      const center = tileCenterToLatLon(tileX, tileY, TILE_ZOOM);
+      for (const gemeinde of thueringenGemeindenData) {
         if (pointInGeometry(center, gemeinde.geometry)) {
           return gemeinde;
         }
@@ -1018,6 +1199,28 @@
           }
         }
 
+        // Add Thüringen gemeinde info if found
+        const thueringenGemeinde = findThueringenGemeindeForTile(tile.x, tile.y);
+        if (thueringenGemeinde) {
+          tooltipContent += `<hr style="margin: 4px 0; border: none; border-top: 1px solid #ccc;">`;
+          tooltipContent += `<b>${thueringenGemeinde.name}</b><br>`;
+          tooltipContent += `Tiles: ${thueringenGemeinde.stats.visitedTiles} / ${thueringenGemeinde.stats.totalTiles}`;
+          if (thueringenGemeinde.stats.totalTiles > 0) {
+            tooltipContent += ` (${thueringenGemeinde.percent}%)`;
+          }
+        }
+
+        // Add Thüringen kreis info if found
+        const thueringenKreis = findThueringenKreisForTile(tile.x, tile.y);
+        if (thueringenKreis) {
+          tooltipContent += `<hr style="margin: 4px 0; border: none; border-top: 1px solid #ccc;">`;
+          tooltipContent += `<b>Kreis: ${thueringenKreis.name}</b><br>`;
+          tooltipContent += `Tiles: ${thueringenKreis.stats.visitedTiles} / ${thueringenKreis.stats.totalTiles}`;
+          if (thueringenKreis.stats.totalTiles > 0) {
+            tooltipContent += ` (${thueringenKreis.percent}%)`;
+          }
+        }
+
         const rect = L.rectangle(bounds, {
           pane: 'tilesPane',
           color: tileColor,
@@ -1080,6 +1283,8 @@
         loadGemeinden();
         // Load Sachsen boundaries
         loadSachsenBoundaries();
+        // Load Thüringen boundaries
+        loadThueringenBoundaries();
       });
     };
 

@@ -62,6 +62,14 @@ pub async fn serve_map_server() -> Result<(), Box<dyn std::error::Error>> {
             get(serve_sachsen_gemeinden_geojson),
         )
         .route("/sachsen_kreise.geojson", get(serve_sachsen_kreise_geojson))
+        .route(
+            "/thueringen_gemeinden.geojson",
+            get(serve_thueringen_gemeinden_geojson),
+        )
+        .route(
+            "/thueringen_kreise.geojson",
+            get(serve_thueringen_kreise_geojson),
+        )
         .route("/fetch-activities", post(fetch_activities))
         .route("/stats", get(get_stats))
         .route("/square-cluster", get(get_square_cluster))
@@ -136,6 +144,38 @@ async fn serve_sachsen_kreise_geojson() -> impl IntoResponse {
             axum::http::StatusCode::NOT_FOUND,
             [(header::CONTENT_TYPE, "text/plain")],
             "sachsen_kreise.geojson not found".to_string(),
+        ),
+    }
+}
+
+async fn serve_thueringen_gemeinden_geojson() -> impl IntoResponse {
+    let path = PathBuf::from("static/thueringen_gemeinden.geojson");
+    match fs::read_to_string(&path) {
+        Ok(content) => (
+            axum::http::StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/geo+json")],
+            content,
+        ),
+        Err(_) => (
+            axum::http::StatusCode::NOT_FOUND,
+            [(header::CONTENT_TYPE, "text/plain")],
+            "thueringen_gemeinden.geojson not found".to_string(),
+        ),
+    }
+}
+
+async fn serve_thueringen_kreise_geojson() -> impl IntoResponse {
+    let path = PathBuf::from("static/thueringen_kreise.geojson");
+    match fs::read_to_string(&path) {
+        Ok(content) => (
+            axum::http::StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/geo+json")],
+            content,
+        ),
+        Err(_) => (
+            axum::http::StatusCode::NOT_FOUND,
+            [(header::CONTENT_TYPE, "text/plain")],
+            "thueringen_kreise.geojson not found".to_string(),
         ),
     }
 }
