@@ -220,29 +220,33 @@
         <input type="checkbox" id="show-tiles" checked>
         Besuchte Tiles anzeigen
       </label>
-      <label>
+      <label style="font-weight: bold; border-bottom: 1px solid #ccc; padding-bottom: 4px; margin-bottom: 4px;">
+        <input type="checkbox" id="show-all-boundaries" checked>
+        Alle Grenzen anzeigen
+      </label>
+      <label style="margin-left: 12px;">
         <input type="checkbox" id="show-gemeinden" checked>
-        Gemeindegrenzen (DVG) anzeigen
+        Gemeindegrenzen (DVG)
       </label>
-      <label>
+      <label style="margin-left: 12px;">
         <input type="checkbox" id="show-kreise" checked>
-        Kreisgrenzen (DVG) anzeigen
+        Kreisgrenzen (DVG)
       </label>
-      <label>
+      <label style="margin-left: 12px;">
         <input type="checkbox" id="show-sachsen-gemeinden" checked>
-        Gemeindegrenzen (Sachsen) anzeigen
+        Gemeindegrenzen (Sachsen)
       </label>
-      <label>
+      <label style="margin-left: 12px;">
         <input type="checkbox" id="show-sachsen-kreise" checked>
-        Kreisgrenzen (Sachsen) anzeigen
+        Kreisgrenzen (Sachsen)
       </label>
-      <label>
+      <label style="margin-left: 12px;">
         <input type="checkbox" id="show-thueringen-gemeinden" checked>
-        Gemeindegrenzen (Thüringen) anzeigen
+        Gemeindegrenzen (Thüringen)
       </label>
-      <label>
+      <label style="margin-left: 12px;">
         <input type="checkbox" id="show-thueringen-kreise" checked>
-        Kreisgrenzen (Thüringen) anzeigen
+        Kreisgrenzen (Thüringen)
       </label>
       <div class="tile-stats">
         <span class="count" id="tile-count">-</span> Tiles besucht (Zoom 14)<br>
@@ -511,6 +515,23 @@
       } else {
         tilesLayer.remove();
       }
+    });
+
+    // Toggle all boundaries visibility
+    document.getElementById('show-all-boundaries').addEventListener('change', (e) => {
+      const checked = e.target.checked;
+      const boundaryCheckboxes = [
+        'show-gemeinden', 'show-kreise',
+        'show-sachsen-gemeinden', 'show-sachsen-kreise',
+        'show-thueringen-gemeinden', 'show-thueringen-kreise'
+      ];
+      boundaryCheckboxes.forEach(id => {
+        const checkbox = document.getElementById(id);
+        if (checkbox.checked !== checked) {
+          checkbox.checked = checked;
+          checkbox.dispatchEvent(new Event('change'));
+        }
+      });
     });
 
     // Toggle Gemeinden visibility
