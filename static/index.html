@@ -222,11 +222,19 @@
       </label>
       <label>
         <input type="checkbox" id="show-gemeinden" checked>
-        Gemeindegrenzen anzeigen
+        Gemeindegrenzen (DVG) anzeigen
       </label>
       <label>
         <input type="checkbox" id="show-kreise" checked>
-        Kreisgrenzen anzeigen
+        Kreisgrenzen (DVG) anzeigen
+      </label>
+      <label>
+        <input type="checkbox" id="show-sachsen-gemeinden" checked>
+        Gemeindegrenzen (Sachsen) anzeigen
+      </label>
+      <label>
+        <input type="checkbox" id="show-sachsen-kreise" checked>
+        Kreisgrenzen (Sachsen) anzeigen
       </label>
       <div class="tile-stats">
         <span class="count" id="tile-count">-</span> Tiles besucht (Zoom 14)<br>
@@ -269,10 +277,19 @@
     map.createPane('tilesPane');
     map.getPane('tilesPane').style.zIndex = 450;
 
+    // Panes for Sachsen layers
+    map.createPane('sachsenGemeindenPane');
+    map.getPane('sachsenGemeindenPane').style.zIndex = 355;
+
+    map.createPane('sachsenKreisePane');
+    map.getPane('sachsenKreisePane').style.zIndex = 405;
+
     const tracks = {};
     const tilesLayer = L.layerGroup().addTo(map);
     const gemeindenLayer = L.layerGroup().addTo(map);
     const kreiseLayer = L.layerGroup().addTo(map);
+    const sachsenGemeindenLayer = L.layerGroup().addTo(map);
+    const sachsenKreiseLayer = L.layerGroup().addTo(map);
     let tilesVisible = true;
 
     // Convert tile coordinates to lat/lon bounds
@@ -499,6 +516,28 @@
       }
     });
 
+    // Toggle Sachsen Gemeinden visibility
+    let sachsenGemeindenVisible = true;
+    document.getElementById('show-sachsen-gemeinden').addEventListener('change', (e) => {
+      sachsenGemeindenVisible = e.target.checked;
+      if (sachsenGemeindenVisible) {
+        sachsenGemeindenLayer.addTo(map);
+      } else {
+        sachsenGemeindenLayer.remove();
+      }
+    });
+
+    // Toggle Sachsen Kreise visibility
+    let sachsenKreiseVisible = true;
+    document.getElementById('show-sachsen-kreise').addEventListener('change', (e) => {
+      sachsenKreiseVisible = e.target.checked;
+      if (sachsenKreiseVisible) {
+        sachsenKreiseLayer.addTo(map);
+      } else {
+        sachsenKreiseLayer.remove();
+      }
+    });
+
     // Store tiles globally for gemeinde calculation
     let allTiles = [];
     const TILE_ZOOM = 14;
@@ -598,6 +637,8 @@
     // Store gemeinden data globally for tile lookups
     let gemeindenData = [];
     let kreiseData = [];
+    let sachsenGemeindenData = [];
+    let sachsenKreiseData = [];
 
     // Find which kreis a point belongs to (using kreiseData)
     function findKreisForPoint(lat, lon) {
@@ -740,6 +781,129 @@
         .catch(err => console.error('Error loading Gemeinden:', err));
     }
 
+    // Load Sachsen boundaries (Gemeinden and Kreise)
+    function loadSachsenBoundaries() {
+      const visitedTileSet = new Set(allTiles.map(t => `${t.x},${t.y}`));
+
+      // Load Sachsen Kreise first
+      fetch('/sachsen_kreise.geojson')
+        .then(r => r.json())
+        .then(geojson => {
+          geojson.features.forEach(feature => {
+            const stats = getTilesInGeometry(feature.geometry, visitedTileSet);
+            const name = feature.properties.KREIS || 'Unbekannt';
+            const percent = stats.totalTiles > 0
+              ? Math.round(stats.visitedTiles / stats.totalTiles * 100)
+              : 0;
+
+            // Store for tile lookup
+            sachsenKreiseData.push({
+              name: name,
+              geometry: feature.geometry,
+              stats: stats,
+              percent: percent
+            });
+
+            const layer = L.geoJSON({ type: 'Feature', geometry: feature.geometry }, {
+              pane: 'sachsenKreisePane',
+              style: {
+                color: '#8b0000',
+                weight: 3,
+                fillColor: '#8b0000',
+                fillOpacity: 0.01,
+                interactive: true
+              }
+            });
+
+            let tooltipContent = `<div class="gemeinde-tooltip">`;
+            tooltipContent += `<b>Kreis (Sachsen): ${name}</b><br>`;
+            tooltipContent += `Tiles: ${stats.visitedTiles} / ${stats.totalTiles}`;
+            if (stats.totalTiles > 0) {
+              tooltipContent += ` (${percent}%)`;
+            }
+            tooltipContent += `</div>`;
+
+            layer.bindTooltip(tooltipContent, {
+              sticky: true,
+              direction: 'top'
+            });
+
+            sachsenKreiseLayer.addLayer(layer);
+          });
+        })
+        .catch(err => console.error('Error loading Sachsen Kreise:', err));
+
+      // Load Sachsen Gemeinden
+      fetch('/sachsen_gemeinden.geojson')
+        .then(r => r.json())
+        .then(geojson => {
+          geojson.features.forEach(feature => {
+            const stats = getTilesInGeometry(feature.geometry, visitedTileSet);
+            const name = feature.properties.ORTSNAME || 'Unbekannt';
+            const kreisName = feature.properties.KREIS || '';
+            const admin = feature.properties.ADMIN || '';
+            const percent = stats.totalTiles > 0
+              ? Math.round(stats.visitedTiles / stats.totalTiles * 100)
+              : 0;
+
+            // Store for tile lookup
+            sachsenGemeindenData.push({
+              name: name,
+              kreisName: kreisName,
+              admin: admin,
+              geometry: feature.geometry,
+              stats: stats,
+              percent: percent
+            });
+
+            // Color based on completion
+            let fillColor = '#ff6b6b';
+            if (percent >= 100) {
+              fillColor = '#51cf66';
+            } else if (percent >= 50) {
+              fillColor = '#ffd43b';
+            } else if (percent >= 25) {
+              fillColor = '#ff922b';
+            }
+
+            const layer = L.geoJSON({ type: 'Feature', geometry: feature.geometry }, {
+              pane: 'sachsenGemeindenPane',
+              style: {
+                color: '#333',
+                weight: 1,
+                fillColor: fillColor,
+                fillOpacity: 0.25,
+                interactive: true
+              }
+            });
+
+            let tooltipContent = `<div class="gemeinde-tooltip">`;
+            tooltipContent += `<b>${name}</b>`;
+            if (admin) {
+              tooltipContent += ` (${admin})`;
+            }
+            tooltipContent += `<br>`;
+            tooltipContent += `Tiles: ${stats.visitedTiles} / ${stats.totalTiles}`;
+            if (stats.totalTiles > 0) {
+              tooltipContent += ` (${percent}%)`;
+            }
+            if (kreisName) {
+              tooltipContent += `<hr style="margin: 4px 0; border: none; border-top: 1px solid #ccc;">`;
+              tooltipContent += `Kreis: ${kreisName}`;
+            }
+            tooltipContent += `</div>`;
+
+            layer.bindTooltip(tooltipContent, {
+              sticky: true,
+              direction: 'top'
+            });
+
+            sachsenGemeindenLayer.addLayer(layer);
+          });
+        })
+        .catch(err => console.error('Error loading Sachsen Gemeinden:', err));
+    }
+
     // Find which kreis a tile belongs to
     function findKreisForTile(tileX, tileY) {
       const center = tileCenterToLatLon(tileX, tileY, TILE_ZOOM);
@@ -755,6 +919,28 @@
     function findGemeindeForTile(tileX, tileY) {
       const center = tileCenterToLatLon(tileX, tileY, TILE_ZOOM);
       for (const gemeinde of gemeindenData) {
+        if (pointInGeometry(center, gemeinde.geometry)) {
+          return gemeinde;
+        }
+      }
+      return null;
+    }
+
+    // Find which Sachsen kreis a tile belongs to
+    function findSachsenKreisForTile(tileX, tileY) {
+      const center = tileCenterToLatLon(tileX, tileY, TILE_ZOOM);
+      for (const kreis of sachsenKreiseData) {
+        if (pointInGeometry(center, kreis.geometry)) {
+          return kreis;
+        }
+      }
+      return null;
+    }
+
+    // Find which Sachsen gemeinde a tile belongs to
+    function findSachsenGemeindeForTile(tileX, tileY) {
+      const center = tileCenterToLatLon(tileX, tileY, TILE_ZOOM);
+      for (const gemeinde of sachsenGemeindenData) {
         if (pointInGeometry(center, gemeinde.geometry)) {
           return gemeinde;
         }
@@ -807,6 +993,28 @@
           tooltipContent += `Tiles: ${kreis.stats.visitedTiles} / ${kreis.stats.totalTiles}`;
           if (kreis.stats.totalTiles > 0) {
             tooltipContent += ` (${kreis.percent}%)`;
+          }
+        }
+
+        // Add Sachsen gemeinde info if found
+        const sachsenGemeinde = findSachsenGemeindeForTile(tile.x, tile.y);
+        if (sachsenGemeinde) {
+          tooltipContent += `<hr style="margin: 4px 0; border: none; border-top: 1px solid #ccc;">`;
+          tooltipContent += `<b>${sachsenGemeinde.name}</b><br>`;
+          tooltipContent += `Tiles: ${sachsenGemeinde.stats.visitedTiles} / ${sachsenGemeinde.stats.totalTiles}`;
+          if (sachsenGemeinde.stats.totalTiles > 0) {
+            tooltipContent += ` (${sachsenGemeinde.percent}%)`;
+          }
+        }
+
+        // Add Sachsen kreis info if found
+        const sachsenKreis = findSachsenKreisForTile(tile.x, tile.y);
+        if (sachsenKreis) {
+          tooltipContent += `<hr style="margin: 4px 0; border: none; border-top: 1px solid #ccc;">`;
+          tooltipContent += `<b>Kreis: ${sachsenKreis.name}</b><br>`;
+          tooltipContent += `Tiles: ${sachsenKreis.stats.visitedTiles} / ${sachsenKreis.stats.totalTiles}`;
+          if (sachsenKreis.stats.totalTiles > 0) {
+            tooltipContent += ` (${sachsenKreis.percent}%)`;
           }
         }
 
@@ -870,6 +1078,8 @@
 
         // Now load Gemeinden with tile data available
         loadGemeinden();
+        // Load Sachsen boundaries
+        loadSachsenBoundaries();
       });
     };
 

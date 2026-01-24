@@ -199,7 +199,8 @@ pub fn get_total_distance(conn: &Connection) -> Result<f64> {
 
 /// Get all activity distances in km
 pub fn get_all_distances(conn: &Connection) -> Result<Vec<f64>> {
-    let mut stmt = conn.prepare("SELECT distance_km FROM imported_activities WHERE distance_km > 0")?;
+    let mut stmt =
+        conn.prepare("SELECT distance_km FROM imported_activities WHERE distance_km > 0")?;
     let distances = stmt.query_map([], |row| row.get(0))?;
     distances.collect()
 }
@@ -208,16 +209,16 @@ pub fn get_all_distances(conn: &Connection) -> Result<Vec<f64>> {
 /// E is the maximum number where you have at least E activities with at least E km
 pub fn calculate_eddington_number(conn: &Connection) -> Result<u32> {
     let mut distances = get_all_distances(conn)?;
-    
+
     // Sort distances in descending order
     distances.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    
+
     let mut eddington: u32 = 0;
-    
+
     for (i, &distance) in distances.iter().enumerate() {
         let count = (i + 1) as u32; // Number of activities with at least this distance
         let distance_floor = distance.floor() as u32;
-        
+
         // If we have 'count' activities with at least 'distance_floor' km
         // then E could be min(count, distance_floor)
         if distance_floor >= count {
@@ -226,6 +227,6 @@ pub fn calculate_eddington_number(conn: &Connection) -> Result<u32> {
             break;
         }
     }
-    
+
     Ok(eddington)
 }
