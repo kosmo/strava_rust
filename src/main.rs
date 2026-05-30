@@ -2,17 +2,13 @@
 // On macOS the terminal is suppressed by using `cargo tauri build` (.app bundle).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use dotenvy::dotenv;
-
+mod config;
 mod database;
 mod map_server;
 mod strava;
 mod tiles;
 
 fn main() {
-    // Load environment variables from .env if present
-    let _ = dotenv();
-
     tauri::Builder::default()
         .setup(|app| {
             // Start the axum map server in Tauri's async runtime

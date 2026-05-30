@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::net::TcpListener;
 
+use crate::config;
 use crate::database;
 use crate::strava;
 use crate::tiles;
@@ -21,8 +22,7 @@ use crate::tiles;
 #[derive(Clone)]
 struct AppState {
     db: Arc<Mutex<Connection>>,
-    // Store the current access token (refreshed via OAuth)
-    access_token: Arc<RwLock<Option<String>>>,
+    config: Arc<RwLock<config::Config>>,
 }
 
 #[derive(Serialize)]
@@ -47,9 +47,10 @@ pub async fn serve_map_server() -> Result<(), Box<dyn std::error::Error>> {
     let total_tiles = database::get_tile_count(&conn)?;
     println!("Total tiles in database: {}", total_tiles);
 
+    let cfg = config::load(&data_dir());
     let state = AppState {
         db: Arc::new(Mutex::new(conn)),
-        access_token: Arc::new(RwLock::new(None)),
+        config: Arc::new(RwLock::new(cfg)),
     };
 
     let app = Router::new()
@@ -387,18 +388,15 @@ async fn fetch_activities(
     State(state): State<AppState>,
     Json(params): Json<FetchParams>,
 ) -> Json<FetchResponse> {
-    // First, check if we have a token from OAuth in state
-    let state_token = {
-        let token_guard = state.access_token.read().unwrap();
-        token_guard.clone()
+    let client_id = config::CLIENT_ID;
+    let client_secret = config::CLIENT_SECRET;
+    let (mut access_token, refresh_token) = {
+        let cfg = state.config.read().unwrap();
+        (
+            cfg.access_token.clone().unwrap_or_default(),
+            cfg.refresh_token.clone().unwrap_or_default(),
+        )
     };
-
-    // Use state token if available, otherwise fall back to environment
-    let mut access_token =
-        state_token.unwrap_or_else(|| std::env::var("STRAVA_ACCESS_TOKEN").unwrap_or_default());
-    let refresh_token = std::env::var("STRAVA_REFRESH_TOKEN").unwrap_or_default();
-    let client_id = std::env::var("STRAVA_CLIENT_ID").unwrap_or_default();
-    let client_secret = std::env::var("STRAVA_CLIENT_SECRET").unwrap_or_default();
 
     if access_token.is_empty() && refresh_token.is_empty() {
         return Json(FetchResponse {
@@ -436,11 +434,7 @@ async fn fetch_activities(
         Err(e) => {
             let error_str = e.to_string();
             // Check if it's a 401 error and we have a refresh token
-            if error_str.contains("401")
-                && !refresh_token.is_empty()
-                && !client_id.is_empty()
-                && !client_secret.is_empty()
-            {
+            if error_str.contains("401") && !refresh_token.is_empty() {
                 println!("Access token expired, attempting refresh...");
 
                 // Try to refresh the token
@@ -449,13 +443,16 @@ async fn fetch_activities(
                 {
                     Ok(new_tokens) => {
                         println!("Token refreshed successfully!");
-                        println!("New access token: {}", new_tokens.access_token);
-                        if let Some(ref rt) = new_tokens.refresh_token {
-                            println!("New refresh token: {}", rt);
+                        access_token = new_tokens.access_token.clone();
+                        // Persist refreshed tokens to config
+                        {
+                            let mut cfg = state.config.write().unwrap();
+                            cfg.access_token = Some(new_tokens.access_token.clone());
+                            if let Some(ref rt) = new_tokens.refresh_token {
+                                cfg.refresh_token = Some(rt.clone());
+                            }
+                            let _ = config::save(&data_dir(), &cfg);
                         }
-                        println!("Please update your .env file with the new tokens.");
-
-                        access_token = new_tokens.access_token;
 
                         // Retry with new token
                         match strava::get_activities(
@@ -637,19 +634,9 @@ struct AuthStartResponse {
     message: String,
 }
 
-async fn auth_start() -> Json<AuthStartResponse> {
-    let client_id = std::env::var("STRAVA_CLIENT_ID").unwrap_or_default();
-
-    if client_id.is_empty() {
-        return Json(AuthStartResponse {
-            success: false,
-            auth_url: None,
-            message: "STRAVA_CLIENT_ID nicht gesetzt.".to_string(),
-        });
-    }
-
+async fn auth_start(_state: State<AppState>) -> Json<AuthStartResponse> {
     let redirect_uri = "http://localhost:8080/auth/callback";
-    let auth_url = strava::get_authorize_url(&client_id, redirect_uri);
+    let auth_url = strava::get_authorize_url(config::CLIENT_ID, redirect_uri);
 
     // Open the auth URL in the system browser (Tauri WebView blocks window.open for external URLs)
     let _ = std::process::Command::new("open").arg(&auth_url).spawn();
@@ -706,23 +693,8 @@ async fn auth_callback(
         }
     };
 
-    let client_id = std::env::var("STRAVA_CLIENT_ID").unwrap_or_default();
-    let client_secret = std::env::var("STRAVA_CLIENT_SECRET").unwrap_or_default();
-
-    if client_id.is_empty() || client_secret.is_empty() {
-        return (
-            axum::http::StatusCode::OK,
-            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-            r#"<!DOCTYPE html>
-<html><head><title>Fehler</title></head>
-<body style="font-family: sans-serif; padding: 40px; text-align: center;">
-<h1 style="color: #dc3545;">❌ Konfigurationsfehler</h1>
-<p>STRAVA_CLIENT_ID oder STRAVA_CLIENT_SECRET nicht gesetzt.</p>
-<p><a href="/">Zurück zur Karte</a></p>
-</body></html>"#
-                .to_string(),
-        );
-    }
+    let client_id = config::CLIENT_ID;
+    let client_secret = config::CLIENT_SECRET;
 
     // Exchange code for token
     let client = match strava::create_client() {
@@ -747,42 +719,27 @@ async fn auth_callback(
 
     match strava::exchange_code(&client, &client_id, &client_secret, &code).await {
         Ok(token) => {
-            // Store the token in state
+            // Store tokens in config and persist to disk
             {
-                let mut token_guard = state.access_token.write().unwrap();
-                *token_guard = Some(token.access_token.clone());
+                let mut cfg = state.config.write().unwrap();
+                cfg.access_token = Some(token.access_token.clone());
+                if let Some(ref rt) = token.refresh_token {
+                    cfg.refresh_token = Some(rt.clone());
+                }
+                let _ = config::save(&data_dir(), &cfg);
             }
-
-            println!("OAuth successful! Access token obtained.");
-            if let Some(ref rt) = token.refresh_token {
-                println!("Refresh token: {}", rt);
-                println!(
-                    "Speichere diesen Refresh Token in deiner .env Datei als STRAVA_REFRESH_TOKEN"
-                );
-            }
+            println!("OAuth successful! Tokens saved to config.json");
 
             (
                 axum::http::StatusCode::OK,
                 [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                format!(
-                    r#"<!DOCTYPE html>
-<html><head><title>Authentifizierung erfolgreich</title>
-<script>
-  // Notify parent window if this was opened as popup
-  if (window.opener) {{
-    window.opener.postMessage({{ type: 'strava-auth-success' }}, '*');
-    setTimeout(() => window.close(), 2000);
-  }}
-</script>
-</head>
+                r#"<!DOCTYPE html>
+<html><head><title>Authentifizierung erfolgreich</title></head>
 <body style="font-family: sans-serif; padding: 40px; text-align: center;">
 <h1 style="color: #28a745;">✅ Erfolgreich authentifiziert!</h1>
-<p>Du kannst dieses Fenster jetzt schließen und Aktivitäten abrufen.</p>
-<p style="font-size: 12px; color: #666;">Refresh Token (für .env): <code>{}</code></p>
+<p>Tokens wurden gespeichert. Du kannst dieses Fenster schließen.</p>
 <p><a href="/">Zurück zur Karte</a></p>
-</body></html>"#,
-                    token.refresh_token.as_deref().unwrap_or("(keiner)")
-                ),
+</body></html>"#.to_string(),
             )
         }
         Err(e) => (
@@ -808,9 +765,9 @@ struct AuthStatusResponse {
 }
 
 async fn auth_status(State(state): State<AppState>) -> Json<AuthStatusResponse> {
-    let token_guard = state.access_token.read().unwrap();
+    let cfg = state.config.read().unwrap();
     Json(AuthStatusResponse {
-        authenticated: token_guard.is_some(),
+        authenticated: cfg.access_token.is_some(),
     })
 }
 
