@@ -326,9 +326,8 @@ pub fn process_gpx_file(
     Ok(count)
 }
 
-/// Process all GPX files in the gpx directory
-pub fn process_all_gpx_files(conn: &mut Connection) -> Result<usize, String> {
-    let gpx_dir = PathBuf::from("gpx");
+/// Process all GPX files in the given directory
+pub fn process_all_gpx_files(conn: &mut Connection, gpx_dir: &PathBuf) -> Result<usize, String> {
     let mut total_new_tiles = 0;
 
     if let Ok(entries) = fs::read_dir(&gpx_dir) {

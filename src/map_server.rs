@@ -39,7 +39,7 @@ pub async fn serve_map_server() -> Result<(), Box<dyn std::error::Error>> {
 
     // Process any new GPX files on startup
     println!("Processing GPX files...");
-    let new_tiles = tiles::process_all_gpx_files(&mut conn)?;
+    let new_tiles = tiles::process_all_gpx_files(&mut conn, &data_dir().join("gpx"))?;;
     if new_tiles > 0 {
         println!("Added {} new tile entries", new_tiles);
     }
@@ -621,7 +621,7 @@ async fn fetch_activities(
     // Process new GPX files to update tiles
     {
         let mut conn = state.db.lock().unwrap();
-        if let Err(e) = tiles::process_all_gpx_files(&mut conn) {
+        if let Err(e) = tiles::process_all_gpx_files(&mut conn, &data_dir().join("gpx")) {
             eprintln!("Fehler beim Verarbeiten der GPX-Dateien: {}", e);
         }
     }
