@@ -1,10 +1,27 @@
 use rusqlite::{params, Connection, Result};
 
-const DB_PATH: &str = "tiles.db";
+fn db_path() -> std::path::PathBuf {
+    #[cfg(debug_assertions)]
+    {
+        std::path::PathBuf::from("tiles.db")
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let base = std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let dir = base
+            .join("Library")
+            .join("Application Support")
+            .join("rust-strava");
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join("tiles.db")
+    }
+}
 
 /// Initialize the database and create tables if they don't exist
 pub fn init_db() -> Result<Connection> {
-    let conn = Connection::open(DB_PATH)?;
+    let conn = Connection::open(db_path())?;
 
     // Create table for visited tiles with first visit timestamp and activity info
     conn.execute(

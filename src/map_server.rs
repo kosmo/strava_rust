@@ -85,104 +85,75 @@ pub async fn serve_map_server() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn serve_map_html() -> impl IntoResponse {
-    let path = PathBuf::from("static/index.html");
-    match fs::read_to_string(&path) {
-        Ok(content) => (
-            axum::http::StatusCode::OK,
-            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-            content,
-        ),
-        Err(_) => (
-            axum::http::StatusCode::NOT_FOUND,
-            [(header::CONTENT_TYPE, "text/plain")],
-            "index.html not found".to_string(),
-        ),
+/// Returns the directory for runtime data files (gpx/, tiles.db).
+/// - Debug: current working directory (convenient during development)
+/// - Release on macOS: ~/Library/Application Support/rust-strava/
+fn data_dir() -> PathBuf {
+    #[cfg(debug_assertions)]
+    {
+        PathBuf::from(".")
     }
+    #[cfg(not(debug_assertions))]
+    {
+        let base = std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."));
+        let dir = base.join("Library").join("Application Support").join("rust-strava");
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+}
+
+async fn serve_map_html() -> impl IntoResponse {
+    (
+        axum::http::StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        include_str!("../static/index.html").to_string(),
+    )
 }
 
 async fn serve_gemeinden_geojson() -> impl IntoResponse {
-    let path = PathBuf::from("static/gemeinden.geojson");
-    match fs::read_to_string(&path) {
-        Ok(content) => (
-            axum::http::StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/geo+json")],
-            content,
-        ),
-        Err(_) => (
-            axum::http::StatusCode::NOT_FOUND,
-            [(header::CONTENT_TYPE, "text/plain")],
-            "gemeinden.geojson not found".to_string(),
-        ),
-    }
+    (
+        axum::http::StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/geo+json")],
+        include_str!("../static/gemeinden.geojson").to_string(),
+    )
 }
 
 async fn serve_sachsen_gemeinden_geojson() -> impl IntoResponse {
-    let path = PathBuf::from("static/sachsen_gemeinden.geojson");
-    match fs::read_to_string(&path) {
-        Ok(content) => (
-            axum::http::StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/geo+json")],
-            content,
-        ),
-        Err(_) => (
-            axum::http::StatusCode::NOT_FOUND,
-            [(header::CONTENT_TYPE, "text/plain")],
-            "sachsen_gemeinden.geojson not found".to_string(),
-        ),
-    }
+    (
+        axum::http::StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/geo+json")],
+        include_str!("../static/sachsen_gemeinden.geojson").to_string(),
+    )
 }
 
 async fn serve_sachsen_kreise_geojson() -> impl IntoResponse {
-    let path = PathBuf::from("static/sachsen_kreise.geojson");
-    match fs::read_to_string(&path) {
-        Ok(content) => (
-            axum::http::StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/geo+json")],
-            content,
-        ),
-        Err(_) => (
-            axum::http::StatusCode::NOT_FOUND,
-            [(header::CONTENT_TYPE, "text/plain")],
-            "sachsen_kreise.geojson not found".to_string(),
-        ),
-    }
+    (
+        axum::http::StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/geo+json")],
+        include_str!("../static/sachsen_kreise.geojson").to_string(),
+    )
 }
 
 async fn serve_thueringen_gemeinden_geojson() -> impl IntoResponse {
-    let path = PathBuf::from("static/thueringen_gemeinden.geojson");
-    match fs::read_to_string(&path) {
-        Ok(content) => (
-            axum::http::StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/geo+json")],
-            content,
-        ),
-        Err(_) => (
-            axum::http::StatusCode::NOT_FOUND,
-            [(header::CONTENT_TYPE, "text/plain")],
-            "thueringen_gemeinden.geojson not found".to_string(),
-        ),
-    }
+    (
+        axum::http::StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/geo+json")],
+        include_str!("../static/thueringen_gemeinden.geojson").to_string(),
+    )
 }
 
 async fn serve_thueringen_kreise_geojson() -> impl IntoResponse {
-    let path = PathBuf::from("static/thueringen_kreise.geojson");
-    match fs::read_to_string(&path) {
-        Ok(content) => (
-            axum::http::StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/geo+json")],
-            content,
-        ),
-        Err(_) => (
-            axum::http::StatusCode::NOT_FOUND,
-            [(header::CONTENT_TYPE, "text/plain")],
-            "thueringen_kreise.geojson not found".to_string(),
-        ),
-    }
+    (
+        axum::http::StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/geo+json")],
+        include_str!("../static/thueringen_kreise.geojson").to_string(),
+    )
 }
 
 async fn list_gpx_files() -> Json<Vec<GpxFileInfo>> {
-    let gpx_dir = PathBuf::from("gpx");
+    let gpx_dir = data_dir().join("gpx");
     let mut files = Vec::new();
     if let Ok(entries) = fs::read_dir(&gpx_dir) {
         for entry in entries.flatten() {
@@ -367,7 +338,7 @@ async fn serve_gpx_file(AxumPath(filename): AxumPath<String>) -> impl IntoRespon
             "Invalid filename".to_string(),
         );
     }
-    let path = PathBuf::from("gpx").join(&filename);
+    let path = data_dir().join("gpx").join(&filename);
     match fs::read_to_string(&path) {
         Ok(content) => (
             axum::http::StatusCode::OK,
@@ -538,7 +509,7 @@ async fn fetch_activities(
         });
     }
 
-    let out_dir = PathBuf::from("gpx");
+    let out_dir = data_dir().join("gpx");
 
     // Export activities as GPX - we handle database operations separately
     // to avoid holding non-Send types across await points

@@ -1,3 +1,7 @@
+// Suppress the console window on Windows release builds.
+// On macOS the terminal is suppressed by using `cargo tauri build` (.app bundle).
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use dotenvy::dotenv;
 
 mod database;
