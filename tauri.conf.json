@@ -1,0 +1,16 @@
+{
+  "productName": "rust-strava",
+  "version": "0.1.0",
+  "identifier": "com.rust-strava.app",
+  "app": {
+    "withGlobalTauri": false,
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all",
+    "icon": ["icons/icon.png"]
+  }
+}

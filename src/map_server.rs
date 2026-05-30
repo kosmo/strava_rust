@@ -680,10 +680,13 @@ async fn auth_start() -> Json<AuthStartResponse> {
     let redirect_uri = "http://localhost:8080/auth/callback";
     let auth_url = strava::get_authorize_url(&client_id, redirect_uri);
 
+    // Open the auth URL in the system browser (Tauri WebView blocks window.open for external URLs)
+    let _ = std::process::Command::new("open").arg(&auth_url).spawn();
+
     Json(AuthStartResponse {
         success: true,
         auth_url: Some(auth_url),
-        message: "Bitte im neuen Fenster bei Strava anmelden.".to_string(),
+        message: "Bitte im System-Browser bei Strava anmelden.".to_string(),
     })
 }
 

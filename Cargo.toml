@@ -13,3 +13,7 @@ clap = { version = "4", features = ["derive"] }
 axum = "0.7"
 chrono = "0.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
+tauri = { version = "2.11.2", features = [] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

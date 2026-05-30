@@ -1378,8 +1378,8 @@
 
         if (result.success && result.auth_url) {
           // Open Strava auth in new window
-          const authWindow = window.open(result.auth_url, 'strava-auth', 'width=600,height=700');
-          authStatus.textContent = 'Bitte im Popup-Fenster anmelden...';
+          // System browser is opened server-side; window.open is blocked in Tauri WebView
+          authStatus.textContent = 'Bitte im Browser anmelden...';
 
           // Listen for success message from popup
           window.addEventListener('message', function handler(event) {
