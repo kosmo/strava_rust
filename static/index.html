@@ -394,6 +394,7 @@
 
           let tooltipContent = `<b>${title}</b><br>`;
           tooltipContent += `Erste Durchfahrt: ${dateStr}`;
+          tooltipContent += `<br>Durchquerungen: ${tile.visit_count || 1}`;
           if (activityId) {
             tooltipContent += `<br>ID: ${activityId}`;
           }
@@ -1156,11 +1157,10 @@
 
         let tooltipContent = `<b>${title}</b><br>`;
         tooltipContent += `Erste Durchfahrt: ${dateStr}`;
+        tooltipContent += `<br>Durchquerungen: ${tile.visit_count || 1}`;
         if (activityId) {
           tooltipContent += `<br>ID: ${activityId}`;
         }
-
-        // Add gemeinde info if found
         if (gemeinde) {
           tooltipContent += `<hr style="margin: 4px 0; border: none; border-top: 1px solid #ccc;">`;
           tooltipContent += `<b>${gemeinde.name}</b><br>`;
@@ -1263,6 +1263,7 @@
 
           let tooltipContent = `<b>${title}</b><br>`;
           tooltipContent += `Erste Durchfahrt: ${dateStr}`;
+          tooltipContent += `<br>Durchquerungen: ${tile.visit_count || 1}`;
           if (activityId) {
             tooltipContent += `<br>ID: ${activityId}`;
           }

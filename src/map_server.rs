@@ -34,14 +34,20 @@ struct GpxFileInfo {
 }
 
 pub async fn serve_map_server() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize database
-    let mut conn = database::init_db()?;
+    // Initialize database (runs schema + data migrations automatically)
+    let (mut conn, needs_tile_recount) = database::init_db()?;
 
-    // Process any new GPX files on startup
+    let gpx_dir = data_dir().join("gpx");
+
+    if needs_tile_recount {
+        println!("DB migration: recalculating tile visit counts from all GPX files...");
+    }
+
+    // Process any new GPX files on startup (also handles post-migration recount)
     println!("Processing GPX files...");
-    let new_tiles = tiles::process_all_gpx_files(&mut conn, &data_dir().join("gpx"))?;;
+    let new_tiles = tiles::process_all_gpx_files(&mut conn, &gpx_dir)?;
     if new_tiles > 0 {
-        println!("Added {} new tile entries", new_tiles);
+        println!("Added/updated {} tile entries", new_tiles);
     }
 
     let total_tiles = database::get_tile_count(&conn)?;
@@ -527,7 +533,7 @@ async fn fetch_activities(
     // An activity that is in the DB but has no GPX file will be re-fetched.
     let already_imported: std::collections::HashSet<i64> = if !params.fetch_all {
         match database::init_db() {
-            Ok(conn) => database::get_imported_activity_ids(&conn)
+            Ok((conn, _)) => database::get_imported_activity_ids(&conn)
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|id| out_dir.join(format!("activity_{}.gpx", id)).exists())
@@ -603,7 +609,7 @@ async fn fetch_activities(
 
     // Mark activities as imported in database (after all awaits are done)
     if !imported_ids.is_empty() {
-        if let Ok(conn) = database::init_db() {
+        if let Ok((conn, _)) = database::init_db() {
             for (id, name, distance_km, elevation_gain_m) in &imported_ids {
                 if let Err(e) = database::mark_activity_imported(
                     &conn,

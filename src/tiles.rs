@@ -73,6 +73,7 @@ pub struct TileInfo {
     pub activity_id: Option<String>,
     pub activity_title: Option<String>,
     pub gpx_filename: Option<String>,
+    pub visit_count: u32,
 }
 
 #[derive(Serialize)]
@@ -369,6 +370,7 @@ pub fn get_visited_tiles(conn: &Connection) -> TilesResponse {
                 activity_id: r.activity_id,
                 activity_title: r.activity_title,
                 gpx_filename: r.gpx_filename,
+                visit_count: r.visit_count,
             })
             .collect(),
         Err(e) => {

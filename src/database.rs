@@ -19,11 +19,38 @@ fn db_path() -> std::path::PathBuf {
     }
 }
 
-/// Initialize the database and create tables if they don't exist
-pub fn init_db() -> Result<Connection> {
+/// Initialize the database and create tables if they don't exist.
+/// Returns `(conn, needs_tile_recount)`. When `needs_tile_recount` is true the
+/// caller should re-process all GPX files so that tile statistics (e.g.
+/// `visit_count`) are recalculated from scratch.
+pub fn init_db() -> Result<(Connection, bool)> {
     let conn = Connection::open(db_path())?;
 
-    // Create table for visited tiles with first visit timestamp and activity info
+    // ── Persistent schema-version tracking ───────────────────────────────────
+    // Every time a migration requires a full data recompute we bump DB_VERSION.
+    // On first run after an update init_db detects the version mismatch and
+    // signals the caller to trigger the recompute automatically.
+    const DB_VERSION: u32 = 2;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    let stored_version: u32 = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'db_version'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    // ── Base schema (always idempotent) ───────────────────────────────────────
     conn.execute(
         "CREATE TABLE IF NOT EXISTS tiles (
             x INTEGER NOT NULL,
@@ -33,12 +60,12 @@ pub fn init_db() -> Result<Connection> {
             activity_id TEXT,
             activity_title TEXT,
             gpx_filename TEXT,
+            visit_count INTEGER NOT NULL DEFAULT 1,
             PRIMARY KEY (x, y, z)
         )",
         [],
     )?;
 
-    // Create table to track processed GPX files
     conn.execute(
         "CREATE TABLE IF NOT EXISTS processed_files (
             filename TEXT PRIMARY KEY,
@@ -47,7 +74,6 @@ pub fn init_db() -> Result<Connection> {
         [],
     )?;
 
-    // Create table to track imported Strava activities
     conn.execute(
         "CREATE TABLE IF NOT EXISTS imported_activities (
             activity_id INTEGER PRIMARY KEY,
@@ -59,19 +85,40 @@ pub fn init_db() -> Result<Connection> {
         [],
     )?;
 
-    // Migration: Add distance_km column if it doesn't exist (for existing databases)
+    // ── Incremental column migrations (safe to run repeatedly) ────────────────
     let _ = conn.execute(
         "ALTER TABLE imported_activities ADD COLUMN distance_km REAL DEFAULT 0.0",
         [],
     );
-
-    // Migration: Add elevation_gain_m column if it doesn't exist (for existing databases)
     let _ = conn.execute(
         "ALTER TABLE imported_activities ADD COLUMN elevation_gain_m INTEGER DEFAULT 0",
         [],
     );
+    let _ = conn.execute(
+        "ALTER TABLE tiles ADD COLUMN visit_count INTEGER NOT NULL DEFAULT 1",
+        [],
+    );
 
-    Ok(conn)
+    // ── Version-gated data migrations ─────────────────────────────────────────
+    let mut needs_tile_recount = false;
+
+    if stored_version < 2 {
+        // v2: visit_count introduced. Reset counters and processed_files so
+        //     all GPX files are re-processed and accurate counts are computed.
+        let _ = conn.execute("UPDATE tiles SET visit_count = 0", []);
+        let _ = conn.execute("DELETE FROM processed_files", []);
+        needs_tile_recount = true;
+    }
+
+    // Persist the current version
+    if stored_version != DB_VERSION {
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('db_version', ?1)",
+            params![DB_VERSION.to_string()],
+        )?;
+    }
+
+    Ok((conn, needs_tile_recount))
 }
 
 /// Check if a GPX file has already been processed
@@ -114,12 +161,13 @@ pub fn insert_tiles_batch(conn: &mut Connection, tiles: &[TileData]) -> Result<(
     let tx = conn.transaction()?;
     {
         let mut stmt = tx.prepare(
-            "INSERT INTO tiles (x, y, z, first_visited_at, activity_id, activity_title, gpx_filename) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO tiles (x, y, z, first_visited_at, activity_id, activity_title, gpx_filename, visit_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)
              ON CONFLICT(x, y, z) DO UPDATE SET 
                 first_visited_at = MIN(first_visited_at, excluded.first_visited_at),
                 activity_id = CASE WHEN excluded.first_visited_at < first_visited_at THEN excluded.activity_id ELSE activity_id END,
                 activity_title = CASE WHEN excluded.first_visited_at < first_visited_at THEN excluded.activity_title ELSE activity_title END,
-                gpx_filename = CASE WHEN excluded.first_visited_at < first_visited_at THEN excluded.gpx_filename ELSE gpx_filename END"
+                gpx_filename = CASE WHEN excluded.first_visited_at < first_visited_at THEN excluded.gpx_filename ELSE gpx_filename END,
+                visit_count = visit_count + 1"
         )?;
 
         for tile in tiles {
@@ -141,7 +189,7 @@ pub fn insert_tiles_batch(conn: &mut Connection, tiles: &[TileData]) -> Result<(
 /// Get all visited tiles from the database
 pub fn get_all_tiles(conn: &Connection) -> Result<Vec<TileRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT x, y, z, first_visited_at, activity_id, activity_title, gpx_filename FROM tiles",
+        "SELECT x, y, z, first_visited_at, activity_id, activity_title, gpx_filename, visit_count FROM tiles",
     )?;
     let tiles = stmt.query_map([], |row| {
         Ok(TileRecord {
@@ -152,6 +200,7 @@ pub fn get_all_tiles(conn: &Connection) -> Result<Vec<TileRecord>> {
             activity_id: row.get(4)?,
             activity_title: row.get(5)?,
             gpx_filename: row.get(6)?,
+            visit_count: row.get(7)?,
         })
     })?;
 
@@ -173,6 +222,7 @@ pub struct TileRecord {
     pub activity_id: Option<String>,
     pub activity_title: Option<String>,
     pub gpx_filename: Option<String>,
+    pub visit_count: u32,
 }
 
 /// Check if an activity has already been imported from Strava
