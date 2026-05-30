@@ -508,17 +508,29 @@ async fn fetch_activities(
 
     let out_dir = data_dir().join("gpx");
 
+    // Ensure the gpx directory exists before writing any files
+    if let Err(e) = std::fs::create_dir_all(&out_dir) {
+        return Json(FetchResponse {
+            success: false,
+            message: format!("GPX-Verzeichnis konnte nicht erstellt werden: {}", e),
+            imported: 0,
+            skipped: 0,
+        });
+    }
+
     // Export activities as GPX - we handle database operations separately
     // to avoid holding non-Send types across await points
     let mut imported_count: u32 = 0;
     let mut skipped_count: u32 = 0;
 
-    // First, check which activities are already imported (using a separate connection)
+    // Check which activities are already imported AND whose GPX file actually exists on disk.
+    // An activity that is in the DB but has no GPX file will be re-fetched.
     let already_imported: std::collections::HashSet<i64> = if !params.fetch_all {
         match database::init_db() {
             Ok(conn) => database::get_imported_activity_ids(&conn)
                 .unwrap_or_default()
                 .into_iter()
+                .filter(|id| out_dir.join(format!("activity_{}.gpx", id)).exists())
                 .collect(),
             Err(_) => std::collections::HashSet::new(),
         }
