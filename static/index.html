@@ -26,50 +26,82 @@
     }
 
     #sidebar h3 {
-      margin: 0 0 10px 0;
-      padding-bottom: 10px;
-      border-bottom: 1px solid #dee2e6;
+      margin: 0 0 6px 0;
     }
 
-    .track-item {
+    .tab-bar {
       display: flex;
-      align-items: center;
-      padding: 8px;
-      margin: 4px 0;
-      background: white;
-      border-radius: 4px;
-      cursor: pointer;
+      gap: 4px;
+      margin-bottom: 10px;
+      border-bottom: 2px solid #dee2e6;
+      padding-bottom: 4px;
     }
 
-    .track-item:hover {
-      background: #e9ecef;
-    }
-
-    .track-item input {
-      margin-right: 10px;
-      flex-shrink: 0;
-    }
-
-    .track-color {
-      width: 12px;
-      height: 12px;
-      border-radius: 2px;
-      margin-right: 8px;
-      flex-shrink: 0;
-    }
-
-    .track-name {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+    .tab-btn {
       flex: 1;
+      padding: 6px 4px;
+      border: none;
+      background: none;
+      cursor: pointer;
+      font-size: 13px;
+      font-family: inherit;
+      color: #666;
+      border-radius: 4px 4px 0 0;
+      transition: background 0.15s, color 0.15s;
     }
 
-    .track-distance {
-      color: #666;
-      margin-left: 8px;
-      white-space: nowrap;
+    .tab-btn:hover {
+      background: #e9ecef;
+      color: #333;
+    }
+
+    .tab-btn.active {
+      background: #28a745;
+      color: white;
+      font-weight: bold;
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    #track-table {
+      width: 100%;
+      border-collapse: collapse;
       font-size: 12px;
+    }
+
+    #track-table th {
+      position: sticky;
+      top: 0;
+      background: #f8f9fa;
+      text-align: left;
+      padding: 6px 4px;
+      border-bottom: 2px solid #dee2e6;
+      font-size: 12px;
+      color: #444;
+      white-space: nowrap;
+    }
+
+    #track-table td {
+      padding: 5px 4px;
+      border-bottom: 1px solid #f0f0f0;
+      vertical-align: middle;
+    }
+
+    #track-table tbody tr:hover td {
+      background: #f0f7f0;
+    }
+
+    .track-color-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      display: inline-block;
     }
 
     #map {
@@ -104,6 +136,36 @@
 
     .tile-controls input {
       margin-right: 8px;
+    }
+
+    .icon-btn-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .icon-toggle-btn {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      border: 1px solid #bbb;
+      background: #aaaaaa;
+      color: white;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      transition: background 0.2s, border-color 0.2s;
+    }
+
+    .icon-toggle-btn.active {
+      background: #28a745;
+      border-color: #1e7e34;
+    }
+
+    .icon-toggle-btn:hover {
+      opacity: 0.85;
     }
 
     .tile-stats {
@@ -153,12 +215,36 @@
       transition: background 0.2s;
     }
 
-    #sync-btn:hover { background: #218838; }
-    #sync-btn:disabled { background: #6c757d; cursor: not-allowed; }
-    #sync-btn.needs-auth { background: #fc4c02; }
-    #sync-btn.needs-auth:hover { background: #e04302; }
-    #sync-btn.spinning svg { animation: spin 1s linear infinite; }
-    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    #sync-btn:hover {
+      background: #218838;
+    }
+
+    #sync-btn:disabled {
+      background: #6c757d;
+      cursor: not-allowed;
+    }
+
+    #sync-btn.needs-auth {
+      background: #fc4c02;
+    }
+
+    #sync-btn.needs-auth:hover {
+      background: #e04302;
+    }
+
+    #sync-btn.spinning svg {
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      from {
+        transform: rotate(0deg);
+      }
+
+      to {
+        transform: rotate(360deg);
+      }
+    }
 
     #sync-status {
       font-size: 12px;
@@ -196,74 +282,81 @@
 
 <body>
   <div id="sidebar">
-    <h3>GPX Tracks</h3>
-    <div class="sync-bar">
-      <button id="sync-btn" onclick="syncStrava()" title="Strava synchronisieren">
-        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="23 4 23 10 17 10"/>
-          <polyline points="1 20 1 14 7 14"/>
-          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-        </svg>
-      </button>
-      <div id="sync-status">Verbinde…</div>
-      <div id="import-status" class="import-status"></div>
+    <div class="tab-bar">
+      <button class="tab-btn active" onclick="switchTab('karte')" id="tab-btn-karte">Karte</button>
+      <button class="tab-btn" onclick="switchTab('strecken')" id="tab-btn-strecken">Strecken</button>
     </div>
-    <div class="tile-controls">
-      <label>
-        <input type="checkbox" id="show-tiles" checked>
-        Besuchte Tiles anzeigen
-      </label>
-      <label style="font-weight: bold; border-bottom: 1px solid #ccc; padding-bottom: 4px; margin-bottom: 4px;">
-        <input type="checkbox" id="show-all-boundaries">
-        Alle Grenzen anzeigen
-      </label>
-      <label style="margin-left: 12px;">
-        <input type="checkbox" id="show-gemeinden">
-        Gemeinden Sachsen-Anhalt
-      </label>
-      <label style="margin-left: 12px;">
-        <input type="checkbox" id="show-kreise">
-        Kreise Sachsen-Anhalt
-      </label>
-      <label style="margin-left: 12px;">
-        <input type="checkbox" id="show-sachsen-gemeinden">
-        Gemeinden Sachsen
-      </label>
-      <label style="margin-left: 12px;">
-        <input type="checkbox" id="show-sachsen-kreise">
-        Kreise Sachsen
-      </label>
-      <label style="margin-left: 12px;">
-        <input type="checkbox" id="show-thueringen-gemeinden">
-        Gemeinden Thüringen
-      </label>
-      <label style="margin-left: 12px;">
-        <input type="checkbox" id="show-thueringen-kreise">
-        Kreise Thüringen
-      </label>
-      <div class="tile-stats">
-        <span class="count" id="tile-count">-</span> Tiles besucht (Zoom 14)<br>
-        <span class="count" id="total-distance">-</span> km Gesamtdistanz<br>
-        <span class="count" id="total-elevation">-</span> hm Gesamt<br>
-        <span id="activity-count">-</span> Aktivitäten<br>
-        <span class="count" id="eddington">-</span> Eddington (km)<br>
-        <span class="count" id="max-cluster">-</span> Yard<br>
-        <span class="count" id="max-square">-</span> Übersquadrat
+    <div id="tab-karte" class="tab-content active">
+      <div class="sync-bar">
+        <button id="sync-btn" onclick="syncStrava()" title="Strava synchronisieren">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10" />
+            <polyline points="1 20 1 14 7 14" />
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+          </svg>
+        </button>
+        <div id="sync-status">Verbinde…</div>
+        <div id="import-status" class="import-status"></div>
       </div>
-      <label style="margin-top: 8px; display: block;">
-        <input type="checkbox" id="show-cluster" checked>
-        Yard anzeigen
-      </label>
-      <label>
-        <input type="checkbox" id="show-square" checked>
-        Übersquadrat anzeigen
-      </label>
+      <div class="tile-controls">
+        <div class="icon-btn-row">
+          <button id="btn-tiles" class="icon-toggle-btn active" title="Besuchte Tiles anzeigen"
+            onclick="toggleTilesBtn()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
+              <rect x="1" y="1" width="6" height="6" rx="1" />
+              <rect x="9" y="1" width="6" height="6" rx="1" />
+              <rect x="1" y="9" width="6" height="6" rx="1" />
+              <rect x="9" y="9" width="6" height="6" rx="1" />
+            </svg>
+          </button>
+          <button id="btn-boundaries" class="icon-toggle-btn" title="Grenzen anzeigen" onclick="toggleBoundariesBtn()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 16 16" fill="none"
+              stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">
+              <polygon points="8,1 15,5 15,11 8,15 1,11 1,5" />
+              <line x1="8" y1="1" x2="8" y2="15" />
+              <line x1="1" y1="8" x2="15" y2="8" />
+            </svg>
+          </button>
+          <button id="btn-tracks" class="icon-toggle-btn active" title="Strecken anzeigen" onclick="toggleTracksBtn()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 17 C6 17 6 7 9 7 C12 7 12 17 15 17 C18 17 18 7 21 7" />
+            </svg>
+          </button>
+        </div>
+        <div class="tile-stats">
+          <span class="count" id="tile-count">-</span> Tiles besucht (Zoom 14)<br>
+          <span class="count" id="total-distance">-</span> km Gesamtdistanz<br>
+          <span class="count" id="total-elevation">-</span> hm Gesamt<br>
+          <span id="activity-count">-</span> Aktivitäten<br>
+          <span class="count" id="eddington">-</span> Eddington (km)<br>
+          <span class="count" id="max-cluster">-</span> Yard<br>
+          <span class="count" id="max-square">-</span> Übersquadrat
+        </div>
+        <label style="margin-top: 8px; display: block;">
+          <input type="checkbox" id="show-cluster" checked>
+          Yard anzeigen
+        </label>
+        <label>
+          <input type="checkbox" id="show-square" checked>
+          Übersquadrat anzeigen
+        </label>
+      </div>
     </div>
-    <div class="controls">
-      <button onclick="toggleAll(true)">Alle an</button>
-      <button onclick="toggleAll(false)">Alle aus</button>
+    <div id="tab-strecken" class="tab-content">
+      <table id="track-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th>Datum</th>
+            <th>Distanz</th>
+            <th>Höhenmeter</th>
+          </tr>
+        </thead>
+        <tbody id="track-list"></tbody>
+      </table>
     </div>
-    <div id="track-list"></div>
   </div>
   <div id="map"></div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -501,98 +594,35 @@
       }
     });
 
-    // Toggle tiles visibility
-    document.getElementById('show-tiles').addEventListener('change', (e) => {
-      tilesVisible = e.target.checked;
+    // Toggle tiles visibility via icon button
+    function toggleTilesBtn() {
+      tilesVisible = !tilesVisible;
+      document.getElementById('btn-tiles').classList.toggle('active', tilesVisible);
       if (tilesVisible) {
         tilesLayer.addTo(map);
       } else {
         tilesLayer.remove();
       }
-    });
+    }
 
-    // Toggle all boundaries visibility
-    document.getElementById('show-all-boundaries').addEventListener('change', (e) => {
-      const checked = e.target.checked;
-      const boundaryCheckboxes = [
-        'show-gemeinden', 'show-kreise',
-        'show-sachsen-gemeinden', 'show-sachsen-kreise',
-        'show-thueringen-gemeinden', 'show-thueringen-kreise'
+    // Toggle all boundaries visibility via icon button
+    let boundariesVisible = false;
+    function toggleBoundariesBtn() {
+      boundariesVisible = !boundariesVisible;
+      document.getElementById('btn-boundaries').classList.toggle('active', boundariesVisible);
+      const allBoundaryLayers = [
+        gemeindenLayer, kreiseLayer,
+        sachsenGemeindenLayer, sachsenKreiseLayer,
+        thueringenGemeindenLayer, thueringenKreiseLayer
       ];
-      boundaryCheckboxes.forEach(id => {
-        const checkbox = document.getElementById(id);
-        if (checkbox.checked !== checked) {
-          checkbox.checked = checked;
-          checkbox.dispatchEvent(new Event('change'));
+      allBoundaryLayers.forEach(layer => {
+        if (boundariesVisible) {
+          layer.addTo(map);
+        } else {
+          layer.remove();
         }
       });
-    });
-
-    // Toggle Gemeinden visibility
-    let gemeindenVisible = false;
-    document.getElementById('show-gemeinden').addEventListener('change', (e) => {
-      gemeindenVisible = e.target.checked;
-      if (gemeindenVisible) {
-        gemeindenLayer.addTo(map);
-      } else {
-        gemeindenLayer.remove();
-      }
-    });
-
-    // Toggle Kreise visibility
-    let kreiseVisible = false;
-    document.getElementById('show-kreise').addEventListener('change', (e) => {
-      kreiseVisible = e.target.checked;
-      if (kreiseVisible) {
-        kreiseLayer.addTo(map);
-      } else {
-        kreiseLayer.remove();
-      }
-    });
-
-    // Toggle Sachsen Gemeinden visibility
-    let sachsenGemeindenVisible = false;
-    document.getElementById('show-sachsen-gemeinden').addEventListener('change', (e) => {
-      sachsenGemeindenVisible = e.target.checked;
-      if (sachsenGemeindenVisible) {
-        sachsenGemeindenLayer.addTo(map);
-      } else {
-        sachsenGemeindenLayer.remove();
-      }
-    });
-
-    // Toggle Sachsen Kreise visibility
-    let sachsenKreiseVisible = false;
-    document.getElementById('show-sachsen-kreise').addEventListener('change', (e) => {
-      sachsenKreiseVisible = e.target.checked;
-      if (sachsenKreiseVisible) {
-        sachsenKreiseLayer.addTo(map);
-      } else {
-        sachsenKreiseLayer.remove();
-      }
-    });
-
-    // Toggle Thüringen Gemeinden visibility
-    let thueringenGemeindenVisible = false;
-    document.getElementById('show-thueringen-gemeinden').addEventListener('change', (e) => {
-      thueringenGemeindenVisible = e.target.checked;
-      if (thueringenGemeindenVisible) {
-        thueringenGemeindenLayer.addTo(map);
-      } else {
-        thueringenGemeindenLayer.remove();
-      }
-    });
-
-    // Toggle Thüringen Kreise visibility
-    let thueringenKreiseVisible = false;
-    document.getElementById('show-thueringen-kreise').addEventListener('change', (e) => {
-      thueringenKreiseVisible = e.target.checked;
-      if (thueringenKreiseVisible) {
-        thueringenKreiseLayer.addTo(map);
-      } else {
-        thueringenKreiseLayer.remove();
-      }
-    });
+    }
 
     // Store tiles globally for gemeinde calculation
     let allTiles = [];
@@ -1322,6 +1352,26 @@
       }
     }
 
+    function switchTab(name) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      document.getElementById('tab-btn-' + name).classList.add('active');
+      document.getElementById('tab-' + name).classList.add('active');
+    }
+
+    let tracksVisible = true;
+
+    function toggleTracksBtn() {
+      tracksVisible = !tracksVisible;
+      document.getElementById('btn-tracks').classList.toggle('active', tracksVisible);
+      Object.keys(tracks).forEach(file => {
+        const track = tracks[file];
+        if (!track || !track.polyline) return;
+        track.visible = tracksVisible;
+        if (tracksVisible) { track.polyline.addTo(map); } else { track.polyline.remove(); }
+      });
+    }
+
     function toggleTrack(file, visible) {
       const track = tracks[file];
       if (!track || !track.polyline) return;
@@ -1330,11 +1380,7 @@
     }
 
     function toggleAll(visible) {
-      Object.keys(tracks).forEach(file => {
-        const checkbox = document.getElementById('chk-' + file);
-        if (checkbox) checkbox.checked = visible;
-        toggleTrack(file, visible);
-      });
+      Object.keys(tracks).forEach(file => toggleTrack(file, visible));
     }
 
     // ── Sync button logic ────────────────────────────────────────────────────
@@ -1456,13 +1502,11 @@
         const color = getGradientColor(index, total);
         tracks[file] = { color: color, polyline: null, visible: true };
 
-        const item = document.createElement('label');
-        item.className = 'track-item';
+        const item = document.createElement('tr');
         const dateStr = formatDate(fileInfo.modified);
-        const distStr = fileInfo.distance_km.toFixed(2) + ' km';
-        const eleStr = fileInfo.elevation_gain_m + ' hm';
-        item.innerHTML = '<input type="checkbox" id="chk-' + file + '" checked><span class="track-color" style="background:' + color + '"></span><span class="track-name">' + dateStr + '</span><span class="track-distance">' + distStr + ' / ' + eleStr + '</span>';
-        item.querySelector('input').addEventListener('change', (e) => toggleTrack(file, e.target.checked));
+        const distStr = fileInfo.distance_km.toFixed(2);
+        const eleStr = fileInfo.elevation_gain_m;
+        item.innerHTML = '<td><span class="track-color-dot" style="background:' + color + '"></span></td><td>' + dateStr + '</td><td style="text-align:right">' + distStr + ' km</td><td style="text-align:right">' + eleStr + ' hm</td>';
         listEl.appendChild(item);
 
         fetch('/gpx/' + file).then(r => r.text()).then(gpxData => {
