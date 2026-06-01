@@ -93,15 +93,17 @@
       vertical-align: middle;
     }
 
+    #track-table tbody tr {
+      cursor: pointer;
+    }
+
     #track-table tbody tr:hover td {
       background: #f0f7f0;
     }
 
-    .track-color-dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 2px;
-      display: inline-block;
+    #track-table tbody tr.selected td {
+      background: #d4edda;
+      font-weight: bold;
     }
 
     #map {
@@ -348,7 +350,6 @@
       <table id="track-table">
         <thead>
           <tr>
-            <th></th>
             <th>Datum</th>
             <th>Distanz</th>
             <th>Höhenmeter</th>
@@ -1353,10 +1354,63 @@
     }
 
     function switchTab(name) {
+      currentTab = name;
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
       document.getElementById('tab-btn-' + name).classList.add('active');
       document.getElementById('tab-' + name).classList.add('active');
+      applyTabLayers();
+    }
+
+    let currentTab = 'karte';
+    let selectedTrackFile = null;
+
+    function applyTabLayers() {
+      if (currentTab === 'karte') {
+        if (tilesVisible) tilesLayer.addTo(map); else tilesLayer.remove();
+        if (boundariesVisible) {
+          [gemeindenLayer, kreiseLayer, sachsenGemeindenLayer, sachsenKreiseLayer,
+            thueringenGemeindenLayer, thueringenKreiseLayer].forEach(l => l.addTo(map));
+        }
+        if (squareVisible) squareLayer.addTo(map); else squareLayer.remove();
+        if (clusterVisible) clusterLayer.addTo(map); else clusterLayer.remove();
+        Object.keys(tracks).forEach(file => {
+          const track = tracks[file];
+          if (!track || !track.polyline) return;
+          if (tracksVisible) { track.polyline.addTo(map); } else { track.polyline.remove(); }
+        });
+      } else {
+        tilesLayer.remove();
+        [gemeindenLayer, kreiseLayer, sachsenGemeindenLayer, sachsenKreiseLayer,
+          thueringenGemeindenLayer, thueringenKreiseLayer].forEach(l => l.remove());
+        squareLayer.remove();
+        clusterLayer.remove();
+        Object.keys(tracks).forEach(file => {
+          const track = tracks[file];
+          if (!track || !track.polyline) return;
+          if (file === selectedTrackFile) { track.polyline.addTo(map); } else { track.polyline.remove(); }
+        });
+        if (selectedTrackFile && tracks[selectedTrackFile] && tracks[selectedTrackFile].polyline) {
+          map.fitBounds(tracks[selectedTrackFile].polyline.getBounds());
+        }
+      }
+    }
+
+    function selectTrack(file) {
+      selectedTrackFile = file;
+      document.querySelectorAll('#track-list tr').forEach(tr => {
+        tr.classList.toggle('selected', tr.dataset.file === file);
+      });
+      if (currentTab === 'strecken') {
+        Object.keys(tracks).forEach(f => {
+          const track = tracks[f];
+          if (!track || !track.polyline) return;
+          if (f === file) { track.polyline.addTo(map); } else { track.polyline.remove(); }
+        });
+        if (tracks[file] && tracks[file].polyline) {
+          map.fitBounds(tracks[file].polyline.getBounds());
+        }
+      }
     }
 
     let tracksVisible = true;
@@ -1502,11 +1556,17 @@
         const color = getGradientColor(index, total);
         tracks[file] = { color: color, polyline: null, visible: true };
 
+        // First track is pre-selected
+        if (index === 0) selectedTrackFile = file;
+
         const item = document.createElement('tr');
+        item.dataset.file = file;
+        if (index === 0) item.classList.add('selected');
+        item.addEventListener('click', () => selectTrack(file));
         const dateStr = formatDate(fileInfo.modified);
         const distStr = fileInfo.distance_km.toFixed(2);
         const eleStr = fileInfo.elevation_gain_m;
-        item.innerHTML = '<td><span class="track-color-dot" style="background:' + color + '"></span></td><td>' + dateStr + '</td><td style="text-align:right">' + distStr + ' km</td><td style="text-align:right">' + eleStr + ' hm</td>';
+        item.innerHTML = '<td>' + dateStr + '</td><td style="text-align:right">' + distStr + ' km</td><td style="text-align:right">' + eleStr + ' hm</td>';
         listEl.appendChild(item);
 
         fetch('/gpx/' + file).then(r => r.text()).then(gpxData => {
@@ -1521,9 +1581,18 @@
             if (!isNaN(lat) && !isNaN(lon)) latlngs.push([lat, lon]);
           });
           if (latlngs.length > 0) {
-            const polyline = L.polyline(latlngs, { color: color, weight: 3, opacity: 0.8 }).addTo(map);
+            const polyline = L.polyline(latlngs, { color: color, weight: 3, opacity: 0.8 });
             tracks[file].polyline = polyline;
-            updateBounds();
+            // On karte tab: add if tracksVisible; on strecken tab: add only if selected
+            if (currentTab === 'karte') {
+              if (tracksVisible) polyline.addTo(map);
+            } else {
+              if (file === selectedTrackFile) {
+                polyline.addTo(map);
+                map.fitBounds(polyline.getBounds());
+              }
+            }
+            if (currentTab === 'karte') updateBounds();
           }
         });
       });
