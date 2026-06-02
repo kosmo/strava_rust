@@ -308,21 +308,23 @@ pub fn process_gpx_file(
     // Mark file as processed
     database::mark_file_processed(conn, filename).map_err(|e| e.to_string())?;
 
-    // Store activity with distance in imported_activities
-    if let Ok(activity_id_num) = activity_id.parse::<i64>() {
-        if let Err(e) = database::mark_activity_imported(
-            conn,
-            activity_id_num,
-            Some(&activity_title),
-            distance_km,
-            elevation_gain_m,
-        ) {
-            eprintln!(
-                "Warning: Failed to mark activity {} as imported: {}",
-                activity_id, e
-            );
-        }
-    }
+    // Store activity with distance in imported_activities.
+    // Source determined from filename prefix (garmin_ vs activity_).
+    let source = if activity_id.starts_with("garmin_") { "garmin" } else { "strava" };
+    // Strip the garmin_ prefix to get the raw numeric ID used as the key.
+    let db_id = if let Some(stripped) = activity_id.strip_prefix("garmin_") {
+        stripped.to_string()
+    } else {
+        activity_id.clone()
+    };
+    let _ = database::mark_activity_imported(
+        conn,
+        &db_id,
+        source,
+        Some(activity_title.as_str()),
+        distance_km,
+        elevation_gain_m,
+    );
 
     Ok(count)
 }

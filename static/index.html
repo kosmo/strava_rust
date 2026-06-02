@@ -289,6 +289,99 @@
       animation: spin 1s linear infinite;
     }
 
+    #garmin-btn {
+      flex-shrink: 0;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      border: none;
+      background: #ff6900;
+      color: white;
+      font-size: 18px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s;
+    }
+
+    #garmin-btn:hover {
+      background: #e05d00;
+    }
+
+    #garmin-btn:disabled {
+      background: #6c757d;
+      cursor: not-allowed;
+    }
+
+    #garmin-btn.needs-auth {
+      background: #ff6900;
+    }
+
+    #garmin-btn.spinning svg {
+      animation: spin 1s linear infinite;
+    }
+
+    #garmin-login-panel {
+      display: none;
+      margin-top: 8px;
+      padding: 10px;
+      background: #fff8f0;
+      border: 1px solid #ff6900;
+      border-radius: 6px;
+      font-size: 12px;
+    }
+
+    #garmin-login-panel .panel-title {
+      font-weight: bold;
+      color: #ff6900;
+      margin-bottom: 8px;
+    }
+
+    #garmin-login-panel input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 5px 7px;
+      margin-bottom: 6px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
+    #garmin-login-panel .panel-btns {
+      display: flex;
+      gap: 6px;
+    }
+
+    #garmin-login-btn {
+      flex: 1;
+      padding: 5px;
+      background: #ff6900;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    #garmin-login-btn:hover {
+      background: #e05d00;
+    }
+
+    #garmin-login-btn:disabled {
+      background: #aaa;
+      cursor: not-allowed;
+    }
+
+    #garmin-login-cancel {
+      padding: 5px 10px;
+      background: #eee;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
     @keyframes spin {
       from {
         transform: rotate(0deg);
@@ -349,8 +442,29 @@
             <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
           </svg>
         </button>
+        <button id="garmin-btn" onclick="syncGarmin()" title="Garmin Connect synchronisieren">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9" />
+            <circle cx="12" cy="12" r="3" />
+            <line x1="12" y1="3" x2="12" y2="6" />
+            <line x1="12" y1="18" x2="12" y2="21" />
+            <line x1="3" y1="12" x2="6" y2="12" />
+            <line x1="18" y1="12" x2="21" y2="12" />
+          </svg>
+        </button>
         <div id="sync-status">Verbinde…</div>
         <div id="import-status" class="import-status"></div>
+      </div>
+      <div id="garmin-login-panel">
+        <div class="panel-title">Garmin Connect – Anmelden</div>
+        <input id="garmin-email-input" type="email" placeholder="E-Mail" autocomplete="username" />
+        <input id="garmin-password-input" type="password" placeholder="Passwort" autocomplete="current-password"
+          onkeydown="if(event.key==='Enter') submitGarminLogin()" />
+        <div class="panel-btns">
+          <button id="garmin-login-btn" onclick="submitGarminLogin()">Anmelden</button>
+          <button id="garmin-login-cancel" onclick="hideGarminLoginPanel()">Abbrechen</button>
+        </div>
       </div>
       <div class="tile-controls">
         <div class="icon-btn-row">
@@ -1620,6 +1734,131 @@
     checkAuthStatus().then(() => {
       if (isAuthenticated) syncStrava();
     });
+    checkGarminAuthStatus();
+
+    // ── Garmin Connect ──────────────────────────────────────────────────────
+
+    let isGarminAuthenticated = false;
+    let garminHasCredentials = false;
+
+    async function checkGarminAuthStatus() {
+      try {
+        const resp = await fetch('/garmin/auth/status');
+        const result = await resp.json();
+        isGarminAuthenticated = result.authenticated;
+        garminHasCredentials = result.has_credentials;
+        updateGarminBtn();
+      } catch (e) { /* server not ready yet */ }
+    }
+
+    function updateGarminBtn() {
+      const btn = document.getElementById('garmin-btn');
+      if (!btn) return;
+      const ready = isGarminAuthenticated || garminHasCredentials;
+      btn.title = ready
+        ? 'Garmin Connect synchronisieren'
+        : 'Garmin Connect – Anmelden';
+      btn.classList.toggle('needs-auth', !ready);
+    }
+
+    function showGarminLoginPanel() {
+      document.getElementById('garmin-login-panel').style.display = 'block';
+      document.getElementById('garmin-email-input').focus();
+    }
+
+    function hideGarminLoginPanel() {
+      document.getElementById('garmin-login-panel').style.display = 'none';
+    }
+
+    async function submitGarminLogin() {
+      const email = document.getElementById('garmin-email-input').value.trim();
+      const password = document.getElementById('garmin-password-input').value;
+      if (!email || !password) return;
+
+      const loginBtn = document.getElementById('garmin-login-btn');
+      const statusEl = document.getElementById('import-status');
+      loginBtn.disabled = true;
+      loginBtn.textContent = 'Anmelden…';
+      statusEl.className = 'import-status loading';
+      statusEl.textContent = 'Garmin Connect: Anmelden…';
+
+      try {
+        const resp = await fetch('/garmin/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const result = await resp.json();
+        if (result.success) {
+          isGarminAuthenticated = true;
+          garminHasCredentials = true;
+          updateGarminBtn();
+          hideGarminLoginPanel();
+          statusEl.className = 'import-status success';
+          statusEl.textContent = result.message;
+          // Immediately start syncing
+          doGarminSync();
+        } else {
+          statusEl.className = 'import-status error';
+          statusEl.textContent = result.message;
+          loginBtn.disabled = false;
+          loginBtn.textContent = 'Anmelden';
+        }
+      } catch (e) {
+        statusEl.className = 'import-status error';
+        statusEl.textContent = 'Fehler: ' + e.message;
+        loginBtn.disabled = false;
+        loginBtn.textContent = 'Anmelden';
+      }
+    }
+
+    async function syncGarmin() {
+      // If no credentials stored at all, show the login form.
+      if (!isGarminAuthenticated && !garminHasCredentials) {
+        showGarminLoginPanel();
+        return;
+      }
+      // Otherwise start syncing (server will auto-login if token is missing/expired).
+      doGarminSync();
+    }
+
+    async function doGarminSync() {
+      const btn = document.getElementById('garmin-btn');
+      const statusEl = document.getElementById('import-status');
+      if (btn) { btn.disabled = true; btn.classList.add('spinning'); }
+      statusEl.className = 'import-status loading';
+      statusEl.textContent = 'Lade Garmin-Aktivitäten…';
+      try {
+        const resp = await fetch('/fetch-garmin-activities', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fetch_all: false, per_page: 100, page: 1 })
+        });
+        const result = await resp.json();
+        if (result.success) {
+          isGarminAuthenticated = true;
+          garminHasCredentials = true;
+          updateGarminBtn();
+          statusEl.className = 'import-status success';
+          statusEl.textContent = result.message;
+          if (result.imported > 0) {
+            setTimeout(() => window.location.reload(), 1500);
+          }
+        } else {
+          statusEl.className = 'import-status error';
+          statusEl.textContent = result.message;
+          // If auth failed, show the login form so the user can re-enter credentials.
+          if (result.message.includes('angemeldet') || result.message.includes('Login')) {
+            showGarminLoginPanel();
+          }
+        }
+      } catch (e) {
+        statusEl.className = 'import-status error';
+        statusEl.textContent = 'Garmin Fehler: ' + e.message;
+      } finally {
+        if (btn) { btn.disabled = false; btn.classList.remove('spinning'); }
+      }
+    }
 
     // Fetch activities from Strava
     async function fetchActivities() {

@@ -4,6 +4,7 @@
 
 mod config;
 mod database;
+mod garmin;
 mod map_server;
 mod strava;
 mod tiles;
@@ -12,8 +13,9 @@ fn main() {
     tauri::Builder::default()
         .setup(|app| {
             // Start the axum map server in Tauri's async runtime
-            tauri::async_runtime::spawn(async {
-                if let Err(e) = map_server::serve_map_server().await {
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = map_server::serve_map_server(app_handle).await {
                     eprintln!("Map server error: {}", e);
                 }
             });

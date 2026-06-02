@@ -30,7 +30,7 @@ pub fn init_db() -> Result<(Connection, bool)> {
     // Every time a migration requires a full data recompute we bump DB_VERSION.
     // On first run after an update init_db detects the version mismatch and
     // signals the caller to trigger the recompute automatically.
-    const DB_VERSION: u32 = 2;
+    const DB_VERSION: u32 = 3;
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS meta (
@@ -76,7 +76,8 @@ pub fn init_db() -> Result<(Connection, bool)> {
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS imported_activities (
-            activity_id INTEGER PRIMARY KEY,
+            activity_id TEXT PRIMARY KEY,
+            source TEXT NOT NULL DEFAULT 'strava',
             activity_name TEXT,
             imported_at INTEGER NOT NULL,
             distance_km REAL DEFAULT 0.0,
@@ -103,11 +104,54 @@ pub fn init_db() -> Result<(Connection, bool)> {
     let mut needs_tile_recount = false;
 
     if stored_version < 2 {
-        // v2: visit_count introduced. Reset counters and processed_files so
-        //     all GPX files are re-processed and accurate counts are computed.
+        // v2: visit_count introduced.
         let _ = conn.execute("UPDATE tiles SET visit_count = 0", []);
         let _ = conn.execute("DELETE FROM processed_files", []);
         needs_tile_recount = true;
+    }
+
+    if stored_version < 3 {
+        // v3: activity_id TEXT + source column.
+        // Migrate only if the column is still INTEGER (check via pragma).
+        let is_integer: bool = conn
+            .query_row(
+                "SELECT type FROM pragma_table_info('imported_activities') WHERE name='activity_id'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|t| t.to_uppercase() == "INTEGER")
+            .unwrap_or(false);
+
+        if is_integer {
+            let _ = conn.execute(
+                "ALTER TABLE imported_activities RENAME TO imported_activities_old",
+                [],
+            );
+            let _ = conn.execute(
+                "CREATE TABLE imported_activities (
+                    activity_id TEXT PRIMARY KEY,
+                    source TEXT NOT NULL DEFAULT 'strava',
+                    activity_name TEXT,
+                    imported_at INTEGER NOT NULL,
+                    distance_km REAL DEFAULT 0.0,
+                    elevation_gain_m INTEGER DEFAULT 0
+                )",
+                [],
+            );
+            let _ = conn.execute(
+                "INSERT INTO imported_activities (activity_id, source, activity_name, imported_at, distance_km, elevation_gain_m)
+                 SELECT CAST(activity_id AS TEXT), 'strava', activity_name, imported_at, distance_km, elevation_gain_m
+                 FROM imported_activities_old",
+                [],
+            );
+            let _ = conn.execute("DROP TABLE imported_activities_old", []);
+        } else {
+            // Already TEXT — just ensure source column exists.
+            let _ = conn.execute(
+                "ALTER TABLE imported_activities ADD COLUMN source TEXT NOT NULL DEFAULT 'strava'",
+                [],
+            );
+        }
     }
 
     // Persist the current version
@@ -225,20 +269,21 @@ pub struct TileRecord {
     pub visit_count: u32,
 }
 
-/// Check if an activity has already been imported from Strava
-pub fn is_activity_imported(conn: &Connection, activity_id: i64) -> Result<bool> {
+/// Check if an activity has already been imported
+pub fn is_activity_imported(conn: &Connection, activity_id: &str, source: &str) -> Result<bool> {
     let count: i32 = conn.query_row(
-        "SELECT COUNT(*) FROM imported_activities WHERE activity_id = ?1",
-        params![activity_id],
+        "SELECT COUNT(*) FROM imported_activities WHERE activity_id = ?1 AND source = ?2",
+        params![activity_id, source],
         |row| row.get(0),
     )?;
     Ok(count > 0)
 }
 
-/// Mark an activity as imported from Strava
+/// Mark an activity as imported
 pub fn mark_activity_imported(
     conn: &Connection,
-    activity_id: i64,
+    activity_id: &str,
+    source: &str,
     activity_name: Option<&str>,
     distance_km: f64,
     elevation_gain_m: i32,
@@ -249,16 +294,16 @@ pub fn mark_activity_imported(
         .as_secs() as i64;
 
     conn.execute(
-        "INSERT OR IGNORE INTO imported_activities (activity_id, activity_name, imported_at, distance_km, elevation_gain_m) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![activity_id, activity_name, now, distance_km, elevation_gain_m],
+        "INSERT OR IGNORE INTO imported_activities (activity_id, source, activity_name, imported_at, distance_km, elevation_gain_m) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![activity_id, source, activity_name, now, distance_km, elevation_gain_m],
     )?;
     Ok(())
 }
 
-/// Get all imported activity IDs
-pub fn get_imported_activity_ids(conn: &Connection) -> Result<Vec<i64>> {
-    let mut stmt = conn.prepare("SELECT activity_id FROM imported_activities")?;
-    let ids = stmt.query_map([], |row| row.get(0))?;
+/// Get all imported activity IDs for a given source
+pub fn get_imported_activity_ids(conn: &Connection, source: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT activity_id FROM imported_activities WHERE source = ?1")?;
+    let ids = stmt.query_map(params![source], |row| row.get(0))?;
     ids.collect()
 }
 

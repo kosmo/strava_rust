@@ -11,6 +11,12 @@ pub const CLIENT_SECRET: &str = env!("STRAVA_CLIENT_SECRET");
 pub struct Config {
     pub access_token: Option<String>,
     pub refresh_token: Option<String>,
+    pub garmin_access_token: Option<String>,
+    pub garmin_refresh_token: Option<String>,
+    /// Stored Garmin credentials for background re-authentication.
+    /// Saved in plaintext in config.json – local only.
+    pub garmin_email: Option<String>,
+    pub garmin_password: Option<String>,
 }
 
 fn config_path(data_dir: &PathBuf) -> PathBuf {

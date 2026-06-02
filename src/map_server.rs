@@ -16,6 +16,7 @@ use tokio::net::TcpListener;
 
 use crate::config;
 use crate::database;
+use crate::garmin;
 use crate::strava;
 use crate::tiles;
 
@@ -34,7 +35,9 @@ struct GpxFileInfo {
     title: String,
 }
 
-pub async fn serve_map_server() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn serve_map_server(
+    _app_handle: tauri::AppHandle,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize database (runs schema + data migrations automatically)
     let (mut conn, needs_tile_recount) = database::init_db()?;
 
@@ -85,6 +88,9 @@ pub async fn serve_map_server() -> Result<(), Box<dyn std::error::Error>> {
         .route("/auth/start", get(auth_start))
         .route("/auth/callback", get(auth_callback))
         .route("/auth/status", get(auth_status))
+        .route("/garmin/auth/login", post(garmin_auth_login))
+        .route("/garmin/auth/status", get(garmin_auth_status))
+        .route("/fetch-garmin-activities", post(fetch_garmin_activities))
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
@@ -547,9 +553,9 @@ async fn fetch_activities(
 
     // Check which activities are already imported AND whose GPX file actually exists on disk.
     // An activity that is in the DB but has no GPX file will be re-fetched.
-    let already_imported: std::collections::HashSet<i64> = if !params.fetch_all {
+    let already_imported: std::collections::HashSet<String> = if !params.fetch_all {
         match database::init_db() {
-            Ok((conn, _)) => database::get_imported_activity_ids(&conn)
+            Ok((conn, _)) => database::get_imported_activity_ids(&conn, "strava")
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|id| out_dir.join(format!("activity_{}.gpx", id)).exists())
@@ -564,7 +570,7 @@ async fn fetch_activities(
     let activities_to_import: Vec<_> = activities
         .into_iter()
         .filter(|act| {
-            if already_imported.contains(&act.id) {
+            if already_imported.contains(&act.id.to_string()) {
                 skipped_count += 1;
                 false
             } else {
@@ -586,7 +592,7 @@ async fn fetch_activities(
     }
 
     // Now export each activity
-    let mut imported_ids: Vec<(i64, Option<String>, f64, i32)> = Vec::new();
+    let mut imported_ids: Vec<(String, Option<String>, f64, i32)> = Vec::new();
 
     for act in &activities_to_import {
         let id = act.id;
@@ -613,7 +619,12 @@ async fn fetch_activities(
                     distance_km,
                     elevation_gain_m
                 );
-                imported_ids.push((id, act.name.clone(), distance_km, elevation_gain_m));
+                imported_ids.push((
+                    id.to_string(),
+                    act.name.clone(),
+                    distance_km,
+                    elevation_gain_m,
+                ));
                 imported_count += 1;
             }
             Err(e) => {
@@ -629,7 +640,8 @@ async fn fetch_activities(
             for (id, name, distance_km, elevation_gain_m) in &imported_ids {
                 if let Err(e) = database::mark_activity_imported(
                     &conn,
-                    *id,
+                    id,
+                    "strava",
                     name.as_deref(),
                     *distance_km,
                     *elevation_gain_m,
@@ -821,7 +833,7 @@ async fn get_stats(State(state): State<AppState>) -> Json<StatsResponse> {
 
     let total_distance = database::get_total_distance(&conn).unwrap_or(0.0);
     let total_elevation = database::get_total_elevation_gain(&conn).unwrap_or(0);
-    let activity_count = database::get_imported_activity_ids(&conn)
+    let activity_count = database::get_imported_activity_ids(&conn, "strava")
         .map(|ids| ids.len())
         .unwrap_or(0);
     let eddington = database::calculate_eddington_number(&conn).unwrap_or(0);
@@ -908,5 +920,339 @@ async fn get_square_cluster(State(state): State<AppState>) -> Json<SquareCluster
             tiles: cluster_tiles,
         },
         zoom: tiles::TILE_ZOOM,
+    })
+}
+
+// ── Garmin Connect auth & sync ────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct GarminAuthStartResponse {
+    success: bool,
+    message: String,
+}
+
+#[derive(Serialize)]
+struct GarminAuthStatusResponse {
+    authenticated: bool,
+    has_credentials: bool,
+}
+
+#[derive(Deserialize)]
+struct GarminCredentials {
+    email: String,
+    password: String,
+}
+
+/// Save Garmin credentials and immediately perform a headless SSO login in the
+/// background.  No browser window is opened.
+async fn garmin_auth_login(
+    State(state): State<AppState>,
+    Json(creds): Json<GarminCredentials>,
+) -> Json<GarminAuthStartResponse> {
+    // Persist credentials first so auto-reauth works on future launches.
+    {
+        let mut cfg = state.config.write().unwrap();
+        cfg.garmin_email = Some(creds.email.clone());
+        cfg.garmin_password = Some(creds.password.clone());
+        let _ = config::save(&data_dir(), &cfg);
+    }
+
+    match garmin::login(&creds.email, &creds.password).await {
+        Ok((access_token, refresh_token)) => {
+            {
+                let mut cfg = state.config.write().unwrap();
+                cfg.garmin_access_token = Some(access_token);
+                cfg.garmin_refresh_token = Some(refresh_token);
+                let _ = config::save(&data_dir(), &cfg);
+            }
+            println!("Garmin Connect: Login erfolgreich, Tokens gespeichert ✓");
+            Json(GarminAuthStartResponse {
+                success: true,
+                message: "Erfolgreich bei Garmin Connect angemeldet.".to_string(),
+            })
+        }
+        Err(e) => Json(GarminAuthStartResponse {
+            success: false,
+            message: format!("Login fehlgeschlagen: {}", e),
+        }),
+    }
+}
+
+async fn garmin_auth_status(State(state): State<AppState>) -> Json<GarminAuthStatusResponse> {
+    let cfg = state.config.read().unwrap();
+    Json(GarminAuthStatusResponse {
+        authenticated: cfg.garmin_access_token.is_some(),
+        has_credentials: cfg.garmin_email.is_some() && cfg.garmin_password.is_some(),
+    })
+}
+
+async fn fetch_garmin_activities(
+    State(state): State<AppState>,
+    Json(params): Json<FetchParams>,
+) -> Json<FetchResponse> {
+    let (mut access_token, mut refresh_token) = {
+        let cfg = state.config.read().unwrap();
+        (
+            cfg.garmin_access_token.clone().unwrap_or_default(),
+            cfg.garmin_refresh_token.clone().unwrap_or_default(),
+        )
+    };
+
+    // If no access token, attempt a silent re-login with stored credentials.
+    if access_token.is_empty() {
+        let (email, password) = {
+            let cfg = state.config.read().unwrap();
+            (
+                cfg.garmin_email.clone().unwrap_or_default(),
+                cfg.garmin_password.clone().unwrap_or_default(),
+            )
+        };
+        if email.is_empty() || password.is_empty() {
+            return Json(FetchResponse {
+                success: false,
+                message: "Nicht bei Garmin Connect angemeldet. Bitte E-Mail und Passwort eingeben."
+                    .to_string(),
+                imported: 0,
+                skipped: 0,
+            });
+        }
+        match garmin::login(&email, &password).await {
+            Ok((at, rt)) => {
+                {
+                    let mut cfg = state.config.write().unwrap();
+                    cfg.garmin_access_token = Some(at.clone());
+                    cfg.garmin_refresh_token = Some(rt.clone());
+                    let _ = config::save(&data_dir(), &cfg);
+                }
+                access_token = at;
+                refresh_token = rt;
+            }
+            Err(e) => {
+                return Json(FetchResponse {
+                    success: false,
+                    message: format!("Garmin Login fehlgeschlagen: {}", e),
+                    imported: 0,
+                    skipped: 0,
+                })
+            }
+        }
+    }
+
+    let client = match garmin::create_client() {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(FetchResponse {
+                success: false,
+                message: format!("HTTP Client Fehler: {}", e),
+                imported: 0,
+                skipped: 0,
+            })
+        }
+    };
+
+    // Fetch activity list; try refreshing token on 401.
+    let start = (params.page.saturating_sub(1)) * params.per_page;
+    let activities = match garmin::get_activities(&client, &access_token, start, params.per_page)
+        .await
+    {
+        Ok(a) => a,
+        Err(e) if e.to_string().contains("401") && !refresh_token.is_empty() => {
+            println!("Garmin: access token expired, refreshing…");
+            // Try a known working client_id stored alongside the refresh token
+            // (we always use the same one for refresh).
+            let client_id = "GARMIN_CONNECT_MOBILE_ANDROID_DI_2025Q2";
+            match garmin::refresh_access_token(client_id, &refresh_token).await {
+                Ok((new_access, new_refresh)) => {
+                    {
+                        let mut cfg = state.config.write().unwrap();
+                        cfg.garmin_access_token = Some(new_access.clone());
+                        cfg.garmin_refresh_token = Some(new_refresh);
+                        let _ = config::save(&data_dir(), &cfg);
+                    }
+                    access_token = new_access;
+                    match garmin::get_activities(&client, &access_token, start, params.per_page)
+                        .await
+                    {
+                        Ok(a) => a,
+                        Err(e2) => {
+                            return Json(FetchResponse {
+                                success: false,
+                                message: format!("Garmin API Fehler nach Token-Refresh: {}", e2),
+                                imported: 0,
+                                skipped: 0,
+                            })
+                        }
+                    }
+                }
+                Err(re) => {
+                    // Refresh failed – try full re-login with stored credentials.
+                    let (email, password) = {
+                        let cfg = state.config.read().unwrap();
+                        (
+                            cfg.garmin_email.clone().unwrap_or_default(),
+                            cfg.garmin_password.clone().unwrap_or_default(),
+                        )
+                    };
+                    if !email.is_empty() && !password.is_empty() {
+                        match garmin::login(&email, &password).await {
+                            Ok((at, rt)) => {
+                                {
+                                    let mut cfg = state.config.write().unwrap();
+                                    cfg.garmin_access_token = Some(at.clone());
+                                    cfg.garmin_refresh_token = Some(rt.clone());
+                                    let _ = config::save(&data_dir(), &cfg);
+                                }
+                                access_token = at;
+                                match garmin::get_activities(
+                                    &client,
+                                    &access_token,
+                                    start,
+                                    params.per_page,
+                                )
+                                .await
+                                {
+                                    Ok(a) => a,
+                                    Err(e2) => {
+                                        return Json(FetchResponse {
+                                            success: false,
+                                            message: format!(
+                                                "Garmin API Fehler nach Re-Login: {}",
+                                                e2
+                                            ),
+                                            imported: 0,
+                                            skipped: 0,
+                                        })
+                                    }
+                                }
+                            }
+                            Err(le) => {
+                                return Json(FetchResponse {
+                                    success: false,
+                                    message: format!(
+                                        "Token-Refresh und Re-Login fehlgeschlagen: {} / {}",
+                                        re, le
+                                    ),
+                                    imported: 0,
+                                    skipped: 0,
+                                })
+                            }
+                        }
+                    } else {
+                        return Json(FetchResponse {
+                            success: false,
+                            message: format!("Token-Refresh fehlgeschlagen: {}", re),
+                            imported: 0,
+                            skipped: 0,
+                        });
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            return Json(FetchResponse {
+                success: false,
+                message: format!("Garmin API Fehler: {}", e),
+                imported: 0,
+                skipped: 0,
+            })
+        }
+    };
+
+    if activities.is_empty() {
+        return Json(FetchResponse {
+            success: true,
+            message: "Keine Garmin-Aktivitäten gefunden.".to_string(),
+            imported: 0,
+            skipped: 0,
+        });
+    }
+
+    let out_dir = data_dir().join("gpx");
+    if let Err(e) = std::fs::create_dir_all(&out_dir) {
+        return Json(FetchResponse {
+            success: false,
+            message: format!("GPX-Verzeichnis konnte nicht erstellt werden: {}", e),
+            imported: 0,
+            skipped: 0,
+        });
+    }
+
+    let already_imported: std::collections::HashSet<String> = if !params.fetch_all {
+        match database::init_db() {
+            Ok((conn, _)) => database::get_imported_activity_ids(&conn, "garmin")
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|id| out_dir.join(format!("garmin_{}.gpx", id)).exists())
+                .collect(),
+            Err(_) => std::collections::HashSet::new(),
+        }
+    } else {
+        std::collections::HashSet::new()
+    };
+
+    let mut imported_count: u32 = 0;
+    let mut skipped_count: u32 = 0;
+    let mut imported_records: Vec<(String, String, f64, i32)> = Vec::new();
+
+    for act in &activities {
+        let id_str = act.activity_id.to_string();
+        if already_imported.contains(&id_str) {
+            skipped_count += 1;
+            continue;
+        }
+
+        match garmin::download_gpx(&client, &access_token, act.activity_id).await {
+            Ok(gpx) => {
+                let file_path = out_dir.join(format!("garmin_{}.gpx", act.activity_id));
+                if let Err(e) = std::fs::write(&file_path, &gpx) {
+                    eprintln!("Failed to write Garmin GPX {}: {}", act.activity_id, e);
+                    continue;
+                }
+                let distance_km = (act.distance / 1000.0 * 100.0).round() / 100.0;
+                let elevation_gain_m = act.elevation_gain.round() as i32;
+                println!(
+                    "Garmin GPX gespeichert: {} ({:.2} km, {} hm)",
+                    file_path.display(),
+                    distance_km,
+                    elevation_gain_m
+                );
+                imported_records.push((
+                    id_str,
+                    act.activity_name.clone(),
+                    distance_km,
+                    elevation_gain_m,
+                ));
+                imported_count += 1;
+            }
+            Err(e) => eprintln!("Garmin GPX download failed for {}: {}", act.activity_id, e),
+        }
+    }
+
+    // Mark in DB and process tiles
+    if !imported_records.is_empty() {
+        if let Ok((conn, _)) = database::init_db() {
+            for (id, name, dist, elev) in &imported_records {
+                let _ = database::mark_activity_imported(
+                    &conn,
+                    id,
+                    "garmin",
+                    Some(name.as_str()),
+                    *dist,
+                    *elev,
+                );
+            }
+        }
+        let mut conn = state.db.lock().unwrap();
+        let _ = tiles::process_all_gpx_files(&mut conn, &out_dir);
+    }
+
+    Json(FetchResponse {
+        success: true,
+        message: format!(
+            "{} Garmin-Aktivitäten importiert, {} übersprungen",
+            imported_count, skipped_count
+        ),
+        imported: imported_count,
+        skipped: skipped_count,
     })
 }

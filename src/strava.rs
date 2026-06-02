@@ -236,7 +236,7 @@ pub async fn export_activities_as_gpx(
         // Check if activity was already imported (unless --fetch-all is set)
         if !fetch_all {
             if let Some(conn) = db_conn {
-                if crate::database::is_activity_imported(conn, id).unwrap_or(false) {
+                if crate::database::is_activity_imported(conn, &id.to_string(), "strava").unwrap_or(false) {
                     println!("Skipping already imported activity {} - {}", id, name);
                     skipped_count += 1;
                     continue;
@@ -268,7 +268,8 @@ pub async fn export_activities_as_gpx(
                 if let Some(conn) = db_conn {
                     if let Err(e) = crate::database::mark_activity_imported(
                         conn,
-                        id,
+                        &id.to_string(),
+                        "strava",
                         act.name.as_deref(),
                         distance_km,
                         elevation_gain_m,
