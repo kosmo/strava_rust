@@ -109,6 +109,57 @@
     #map {
       flex: 1;
       height: 100vh;
+      position: relative;
+    }
+
+    #track-info {
+      display: none;
+      position: absolute;
+      bottom: 32px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1000;
+      background: rgba(255, 255, 255, 0.93);
+      border: 1px solid #ccc;
+      border-radius: 10px;
+      padding: 12px 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+      text-align: center;
+      min-width: 260px;
+      pointer-events: none;
+    }
+
+    #track-info .ti-title {
+      font-weight: bold;
+      font-size: 15px;
+      margin-bottom: 8px;
+      color: #333;
+    }
+
+    #track-info .ti-stats {
+      display: flex;
+      gap: 24px;
+      justify-content: center;
+    }
+
+    #track-info .ti-stat {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    #track-info .ti-val {
+      font-size: 20px;
+      font-weight: bold;
+      color: #e01010;
+    }
+
+    #track-info .ti-lbl {
+      font-size: 11px;
+      color: #888;
+      margin-top: 2px;
     }
 
     .controls {
@@ -350,16 +401,24 @@
       <table id="track-table">
         <thead>
           <tr>
-            <th>Datum</th>
-            <th>Distanz</th>
-            <th>Höhenmeter</th>
+            <th>km</th>
+            <th>Titel</th>
           </tr>
         </thead>
         <tbody id="track-list"></tbody>
       </table>
     </div>
   </div>
-  <div id="map"></div>
+  <div id="map">
+    <div id="track-info">
+      <div class="ti-title" id="ti-title"></div>
+      <div class="ti-stats">
+        <div class="ti-stat"><span class="ti-val" id="ti-dist">-</span><span class="ti-lbl">km</span></div>
+        <div class="ti-stat"><span class="ti-val" id="ti-avg">-</span><span class="ti-lbl">km/h Ø</span></div>
+        <div class="ti-stat"><span class="ti-val" id="ti-ele">-</span><span class="ti-lbl">hm</span></div>
+      </div>
+    </div>
+  </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     const map = L.map('map').setView([51.25, 12.14], 13);
@@ -1359,6 +1418,7 @@
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
       document.getElementById('tab-btn-' + name).classList.add('active');
       document.getElementById('tab-' + name).classList.add('active');
+      document.getElementById('track-info').style.display = (name === 'strecken') ? 'block' : 'none';
       applyTabLayers();
     }
 
@@ -1401,6 +1461,14 @@
       document.querySelectorAll('#track-list tr').forEach(tr => {
         tr.classList.toggle('selected', tr.dataset.file === file);
       });
+      // Update info panel
+      const t = tracks[file];
+      if (t) {
+        document.getElementById('ti-title').textContent = t.title || t.date || '';
+        document.getElementById('ti-dist').textContent = t.distance_km != null ? t.distance_km.toFixed(2) : '-';
+        document.getElementById('ti-avg').textContent = t.avg_speed_kmh != null ? t.avg_speed_kmh.toFixed(1) : '-';
+        document.getElementById('ti-ele').textContent = t.elevation_gain_m != null ? t.elevation_gain_m : '-';
+      }
       if (currentTab === 'strecken') {
         Object.keys(tracks).forEach(f => {
           const track = tracks[f];
@@ -1550,24 +1618,39 @@
     fetch('/gpx').then(r => r.json()).then(files => {
       const listEl = document.getElementById('track-list');
       const total = files.length;
+      let firstVisible = true;
 
       files.forEach((fileInfo, index) => {
         const file = fileInfo.filename;
-        const color = getGradientColor(index, total);
-        tracks[file] = { color: color, polyline: null, visible: true };
+        const TRACK_COLOR = '#e01010';
+        tracks[file] = {
+          color: TRACK_COLOR,
+          polyline: null,
+          visible: true,
+          distance_km: fileInfo.distance_km,
+          elevation_gain_m: fileInfo.elevation_gain_m,
+          avg_speed_kmh: null,
+          date: formatDate(fileInfo.modified),
+          title: fileInfo.title || ''
+        };
 
-        // First track is pre-selected
-        if (index === 0) selectedTrackFile = file;
+        // Only show in table if >= 1 km
+        if (fileInfo.distance_km >= 1.0) {
+          // First visible track is pre-selected
+          if (firstVisible) {
+            selectedTrackFile = file;
+            firstVisible = false;
+          }
 
-        const item = document.createElement('tr');
-        item.dataset.file = file;
-        if (index === 0) item.classList.add('selected');
-        item.addEventListener('click', () => selectTrack(file));
-        const dateStr = formatDate(fileInfo.modified);
-        const distStr = fileInfo.distance_km.toFixed(2);
-        const eleStr = fileInfo.elevation_gain_m;
-        item.innerHTML = '<td>' + dateStr + '</td><td style="text-align:right">' + distStr + ' km</td><td style="text-align:right">' + eleStr + ' hm</td>';
-        listEl.appendChild(item);
+          const item = document.createElement('tr');
+          item.dataset.file = file;
+          if (file === selectedTrackFile) item.classList.add('selected');
+          item.addEventListener('click', () => selectTrack(file));
+          const distStr = fileInfo.distance_km.toFixed(2);
+          const titleStr = fileInfo.title || '';
+          item.innerHTML = '<td style="text-align:right">' + distStr + '</td><td>' + titleStr + '</td>';
+          listEl.appendChild(item);
+        }
 
         fetch('/gpx/' + file).then(r => r.text()).then(gpxData => {
           const parser = new DOMParser();
@@ -1580,8 +1663,25 @@
             const lon = parseFloat(pt.getAttribute('lon'));
             if (!isNaN(lat) && !isNaN(lon)) latlngs.push([lat, lon]);
           });
+          // Compute avg speed from first/last trkpt time
+          const times = Array.from(trkpts)
+            .map(pt => { const t = pt.querySelector('time'); return t ? new Date(t.textContent).getTime() : null; })
+            .filter(t => t !== null);
+          if (times.length >= 2) {
+            const elapsedH = (times[times.length - 1] - times[0]) / 3600000;
+            if (elapsedH > 0) {
+              tracks[file].avg_speed_kmh = fileInfo.distance_km / elapsedH;
+            }
+          }
+          // Update info panel if this is the selected track
+          if (file === selectedTrackFile) {
+            document.getElementById('ti-title').textContent = tracks[file].title || tracks[file].date || '';
+            document.getElementById('ti-dist').textContent = fileInfo.distance_km.toFixed(2);
+            document.getElementById('ti-avg').textContent = tracks[file].avg_speed_kmh != null ? tracks[file].avg_speed_kmh.toFixed(1) : '-';
+            document.getElementById('ti-ele').textContent = fileInfo.elevation_gain_m;
+          }
           if (latlngs.length > 0) {
-            const polyline = L.polyline(latlngs, { color: color, weight: 3, opacity: 0.8 });
+            const polyline = L.polyline(latlngs, { color: TRACK_COLOR, weight: 3, opacity: 0.9 });
             tracks[file].polyline = polyline;
             // On karte tab: add if tracksVisible; on strecken tab: add only if selected
             if (currentTab === 'karte') {

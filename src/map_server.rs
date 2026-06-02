@@ -31,6 +31,7 @@ struct GpxFileInfo {
     modified: u64, // Unix timestamp in seconds
     distance_km: f64,
     elevation_gain_m: i32,
+    title: String,
 }
 
 pub async fn serve_map_server() -> Result<(), Box<dyn std::error::Error>> {
@@ -105,7 +106,10 @@ fn data_dir() -> PathBuf {
         let base = std::env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("."));
-        let dir = base.join("Library").join("Application Support").join("rust-strava");
+        let dir = base
+            .join("Library")
+            .join("Application Support")
+            .join("rust-strava");
         let _ = std::fs::create_dir_all(&dir);
         dir
     }
@@ -167,12 +171,13 @@ async fn list_gpx_files() -> Json<Vec<GpxFileInfo>> {
             if let Some(name) = entry.file_name().to_str() {
                 if name.ends_with(".gpx") {
                     let path = entry.path();
-                    let (modified, distance_km, elevation_gain_m) = parse_gpx_info(&path);
+                    let (modified, distance_km, elevation_gain_m, title) = parse_gpx_info(&path);
                     files.push(GpxFileInfo {
                         filename: name.to_string(),
                         modified,
                         distance_km,
                         elevation_gain_m,
+                        title,
                     });
                 }
             }
@@ -183,17 +188,28 @@ async fn list_gpx_files() -> Json<Vec<GpxFileInfo>> {
     Json(files)
 }
 
-fn parse_gpx_info(path: &PathBuf) -> (u64, f64, i32) {
+fn parse_gpx_info(path: &PathBuf) -> (u64, f64, i32, String) {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
-        Err(_) => return (0, 0.0, 0),
+        Err(_) => return (0, 0.0, 0, String::new()),
     };
 
     let timestamp = extract_gpx_time(&content);
     let distance = calculate_distance_from_content(&content);
     let elevation_gain = calculate_elevation_gain(&content);
+    let title = extract_gpx_name(&content);
 
-    (timestamp, distance, elevation_gain)
+    (timestamp, distance, elevation_gain, title)
+}
+
+fn extract_gpx_name(content: &str) -> String {
+    if let Some(start) = content.find("<name>") {
+        let rest = &content[start + 6..];
+        if let Some(end) = rest.find("</name>") {
+            return rest[..end].trim().to_string();
+        }
+    }
+    String::new()
 }
 
 fn extract_gpx_time(content: &str) -> u64 {
@@ -757,7 +773,8 @@ async fn auth_callback(
 <h1 style="color: #28a745;">✅ Erfolgreich authentifiziert!</h1>
 <p>Tokens wurden gespeichert. Du kannst dieses Fenster schließen.</p>
 <p><a href="/">Zurück zur Karte</a></p>
-</body></html>"#.to_string(),
+</body></html>"#
+                    .to_string(),
             )
         }
         Err(e) => (
