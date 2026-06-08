@@ -171,27 +171,175 @@ async fn serve_thueringen_kreise_geojson() -> impl IntoResponse {
 
 async fn list_gpx_files() -> Json<Vec<GpxFileInfo>> {
     let gpx_dir = data_dir().join("gpx");
+
+    // Load DB names (numeric_id → name) so we can override GPX <name> tags.
+    let db_names: std::collections::HashMap<String, String> = database::init_db()
+        .ok()
+        .and_then(|(conn, _)| database::get_all_activity_names(&conn).ok())
+        .unwrap_or_default();
+
+    // First pass: collect all Garmin files and build two maps:
+    //   start_timestamp → garmin_title   (for title matching)
+    //   start_timestamp → true           (for deduplication: skip matching Strava files)
+    let mut garmin_title_by_time: std::collections::HashMap<u64, String> =
+        std::collections::HashMap::new();
+    if let Ok(entries) = fs::read_dir(&gpx_dir) {
+        for entry in entries.flatten() {
+            let fname = entry.file_name();
+            let name = match fname.to_str() {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            if !name.starts_with("garmin_") || !name.ends_with(".gpx") {
+                continue;
+            }
+            let content = match fs::read_to_string(entry.path()) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let ts = extract_gpx_time(&content);
+            if ts == 0 {
+                continue;
+            }
+            let stem = name.trim_end_matches(".gpx");
+            let db_key = stem.strip_prefix("garmin_").unwrap_or(stem);
+            let title = db_names
+                .get(db_key)
+                .cloned()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| extract_gpx_name(&content));
+            if !title.is_empty() {
+                garmin_title_by_time.insert(ts, title);
+            }
+        }
+    }
+
+    // Second pass: collect all GPX files, skipping Strava duplicates.
     let mut files = Vec::new();
     if let Ok(entries) = fs::read_dir(&gpx_dir) {
         for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str() {
-                if name.ends_with(".gpx") {
-                    let path = entry.path();
-                    let (modified, distance_km, elevation_gain_m, title) = parse_gpx_info(&path);
-                    files.push(GpxFileInfo {
-                        filename: name.to_string(),
-                        modified,
-                        distance_km,
-                        elevation_gain_m,
-                        title,
-                    });
-                }
+            let fname = entry.file_name();
+            let name = match fname.to_str() {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            if !name.ends_with(".gpx") {
+                continue;
             }
+            let content = match fs::read_to_string(entry.path()) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            let stem = name.trim_end_matches(".gpx");
+            let is_strava = stem.starts_with("activity_");
+
+            // Use activity start time for sorting (consistent, independent of file mtime).
+            let modified = extract_gpx_time(&content);
+            let distance_km = calculate_distance_from_content(&content);
+            let elevation_gain_m = calculate_elevation_gain(&content);
+            let gpx_title = extract_gpx_name(&content);
+
+            let db_key = stem
+                .strip_prefix("activity_")
+                .or_else(|| stem.strip_prefix("garmin_"))
+                .unwrap_or(stem);
+
+            // For Strava files: find matching Garmin title by timestamp.
+            let garmin_match = if is_strava {
+                let ts = modified; // same variable, activity start time
+                if ts > 0 {
+                    garmin_title_by_time.get(&ts).cloned().or_else(|| {
+                        (1u64..=60).find_map(|d| {
+                            garmin_title_by_time
+                                .get(&(ts + d))
+                                .or_else(|| garmin_title_by_time.get(&(ts.saturating_sub(d))))
+                                .cloned()
+                        })
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // Skip Strava file when a Garmin file covers the same activity.
+            if is_strava && garmin_match.is_some() {
+                continue;
+            }
+
+            let title = db_names
+                .get(db_key)
+                .cloned()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(gpx_title);
+
+            files.push(GpxFileInfo {
+                filename: name.to_string(),
+                modified,
+                distance_km,
+                elevation_gain_m,
+                title,
+            });
         }
     }
     // Sort by modified time, newest first
     files.sort_by(|a, b| b.modified.cmp(&a.modified));
     Json(files)
+}
+
+/// Replace the first `<name>…</name>` in the given GPX file with `new_name`.
+/// Tries both `activity_{id}.gpx` and `garmin_{id}.gpx` in `gpx_dir`.
+fn update_gpx_name(gpx_dir: &PathBuf, activity_id: &str, new_name: &str) {
+    let candidates = [
+        gpx_dir.join(format!("activity_{}.gpx", activity_id)),
+        gpx_dir.join(format!("garmin_{}.gpx", activity_id)),
+    ];
+    for path in &candidates {
+        if !path.exists() {
+            continue;
+        }
+        let content = match fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("update_gpx_name: read failed for {}: {}", path.display(), e);
+                continue;
+            }
+        };
+        let updated = replace_gpx_name(&content, new_name);
+        if let Err(e) = fs::write(path, &updated) {
+            eprintln!(
+                "update_gpx_name: write failed for {}: {}",
+                path.display(),
+                e
+            );
+        } else {
+            println!("GPX <name> aktualisiert: {}", path.display());
+        }
+    }
+}
+
+/// Swap the content of the first `<name>…</name>` element in a GPX string.
+fn replace_gpx_name(content: &str, new_name: &str) -> String {
+    // Escape XML special characters in the new name.
+    let escaped = new_name
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    if let Some(start) = content.find("<name>") {
+        if let Some(end) = content[start..].find("</name>") {
+            let before = &content[..start + 6]; // up to and including "<name>"
+            let after = &content[start + end..]; // from "</name>" onwards
+            return format!("{}{}{}", before, escaped, after);
+        }
+    }
+    // No <name> tag found – insert one right before <trk> or at the end.
+    if let Some(pos) = content.find("<trk>") {
+        let (before, after) = content.split_at(pos);
+        return format!("{}  <name>{}</name>\n{}", before, escaped, after);
+    }
+    content.to_string()
 }
 
 fn parse_gpx_info(path: &PathBuf) -> (u64, f64, i32, String) {
@@ -256,7 +404,9 @@ fn parse_iso8601(s: &str) -> u64 {
     }
 
     let date_parts: Vec<u32> = parts[0].split('-').filter_map(|p| p.parse().ok()).collect();
-    let time_parts: Vec<u32> = parts[1].split(':').filter_map(|p| p.parse().ok()).collect();
+    // Strip fractional seconds (e.g. "51.000" → "51") before parsing
+    let time_str = parts[1].split('.').next().unwrap_or(parts[1]);
+    let time_parts: Vec<u32> = time_str.split(':').filter_map(|p| p.parse().ok()).collect();
 
     if date_parts.len() < 3 || time_parts.len() < 3 {
         return 0;
@@ -1177,13 +1327,22 @@ async fn fetch_garmin_activities(
         });
     }
 
-    let already_imported: std::collections::HashSet<String> = if !params.fetch_all {
+    // Build a combined set of all already-imported activity IDs (any source).
+    let existing_ids: std::collections::HashSet<String> = if !params.fetch_all {
         match database::init_db() {
-            Ok((conn, _)) => database::get_imported_activity_ids(&conn, "garmin")
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|id| out_dir.join(format!("garmin_{}.gpx", id)).exists())
-                .collect(),
+            Ok((conn, _)) => {
+                let mut ids: std::collections::HashSet<String> =
+                    database::get_imported_activity_ids(&conn, "garmin")
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect();
+                ids.extend(
+                    database::get_imported_activity_ids(&conn, "strava")
+                        .unwrap_or_default()
+                        .into_iter(),
+                );
+                ids
+            }
             Err(_) => std::collections::HashSet::new(),
         }
     } else {
@@ -1191,13 +1350,38 @@ async fn fetch_garmin_activities(
     };
 
     let mut imported_count: u32 = 0;
-    let mut skipped_count: u32 = 0;
+    let mut title_updated_count: u32 = 0;
     let mut imported_records: Vec<(String, String, f64, i32)> = Vec::new();
 
     for act in &activities {
         let id_str = act.activity_id.to_string();
-        if already_imported.contains(&id_str) {
-            skipped_count += 1;
+
+        // Activity already imported (from any source) → update title from Garmin if changed
+        if existing_ids.contains(&id_str) {
+            if !act.activity_name.is_empty() {
+                if let Ok((conn, _)) = database::init_db() {
+                    let old_name = database::get_activity_name(&conn, &id_str)
+                        .unwrap_or(None)
+                        .unwrap_or_default();
+                    if old_name != act.activity_name {
+                        if let Err(e) =
+                            database::update_activity_name(&conn, &id_str, &act.activity_name)
+                        {
+                            eprintln!(
+                                "Failed to update activity name for {}: {}",
+                                act.activity_id, e
+                            );
+                        } else {
+                            update_gpx_name(&out_dir, &id_str, &act.activity_name);
+                            println!(
+                                "Titel von Garmin übernommen: {} → \"{}\"",
+                                id_str, act.activity_name
+                            );
+                            title_updated_count += 1;
+                        }
+                    }
+                }
+            }
             continue;
         }
 
@@ -1246,13 +1430,19 @@ async fn fetch_garmin_activities(
         let _ = tiles::process_all_gpx_files(&mut conn, &out_dir);
     }
 
+    let message = match (imported_count, title_updated_count) {
+        (0, 0) => "Keine Änderungen.".to_string(),
+        (i, 0) => format!("{} Garmin-Aktivitäten importiert", i),
+        (0, t) => format!("{} Titel von Garmin aktualisiert", t),
+        (i, t) => format!(
+            "{} Garmin-Aktivitäten importiert, {} Titel aktualisiert",
+            i, t
+        ),
+    };
     Json(FetchResponse {
         success: true,
-        message: format!(
-            "{} Garmin-Aktivitäten importiert, {} übersprungen",
-            imported_count, skipped_count
-        ),
+        message,
         imported: imported_count,
-        skipped: skipped_count,
+        skipped: title_updated_count,
     })
 }

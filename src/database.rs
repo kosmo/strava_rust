@@ -279,6 +279,36 @@ pub fn is_activity_imported(conn: &Connection, activity_id: &str, source: &str) 
     Ok(count > 0)
 }
 
+/// Get the stored activity_name for a given activity_id (any source).
+pub fn get_activity_name(conn: &Connection, activity_id: &str) -> Result<Option<String>> {
+    let mut stmt = conn
+        .prepare("SELECT activity_name FROM imported_activities WHERE activity_id = ?1 LIMIT 1")?;
+    let mut rows = stmt.query(params![activity_id])?;
+    if let Some(row) = rows.next()? {
+        Ok(row.get(0)?)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Update the activity_name for an already imported activity and sync the title
+/// into the tiles table (covers both Strava IDs like "12345" and Garmin IDs
+/// stored as "garmin_12345").
+pub fn update_activity_name(conn: &Connection, activity_id: &str, new_name: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE imported_activities SET activity_name = ?1 WHERE activity_id = ?2",
+        params![new_name, activity_id],
+    )?;
+    // Tiles from Strava files store activity_id = "12345";
+    // tiles from Garmin files store activity_id = "garmin_12345".
+    // Update both to keep the displayed title in sync.
+    conn.execute(
+        "UPDATE tiles SET activity_title = ?1 WHERE activity_id = ?2 OR activity_id = ('garmin_' || ?2)",
+        params![new_name, activity_id],
+    )?;
+    Ok(())
+}
+
 /// Mark an activity as imported
 pub fn mark_activity_imported(
     conn: &Connection,
@@ -298,6 +328,24 @@ pub fn mark_activity_imported(
         params![activity_id, source, activity_name, now, distance_km, elevation_gain_m],
     )?;
     Ok(())
+}
+
+/// Get a map of activity_id → activity_name for all imported activities that have a name.
+pub fn get_all_activity_names(
+    conn: &Connection,
+) -> Result<std::collections::HashMap<String, String>> {
+    let mut stmt = conn.prepare(
+        "SELECT activity_id, activity_name FROM imported_activities WHERE activity_name IS NOT NULL AND activity_name != ''",
+    )?;
+    let pairs = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut map = std::collections::HashMap::new();
+    for pair in pairs {
+        let (id, name) = pair?;
+        map.insert(id, name);
+    }
+    Ok(map)
 }
 
 /// Get all imported activity IDs for a given source

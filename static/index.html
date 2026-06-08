@@ -1841,7 +1841,7 @@
           updateGarminBtn();
           statusEl.className = 'import-status success';
           statusEl.textContent = result.message;
-          if (result.imported > 0) {
+          if (result.imported > 0 || result.skipped > 0) {
             setTimeout(() => window.location.reload(), 1500);
           }
         } else {
