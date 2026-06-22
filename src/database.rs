@@ -355,6 +355,48 @@ pub fn get_imported_activity_ids(conn: &Connection, source: &str) -> Result<Vec<
     ids.collect()
 }
 
+/// Get `(activity_id, source)` for every imported activity.
+pub fn get_all_imported(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare("SELECT activity_id, source FROM imported_activities")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    rows.collect()
+}
+
+/// Update the stored elevation gain (in meters) for a single imported activity.
+pub fn update_activity_elevation(
+    conn: &Connection,
+    activity_id: &str,
+    elevation_gain_m: i32,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE imported_activities SET elevation_gain_m = ?1 WHERE activity_id = ?2",
+        params![elevation_gain_m, activity_id],
+    )?;
+    Ok(())
+}
+
+/// Read a value from the `meta` key/value table.
+pub fn get_meta(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM meta WHERE key = ?1",
+        params![key],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+}
+
+/// Write a value into the `meta` key/value table.
+pub fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
 /// Get total distance of all imported activities in km
 pub fn get_total_distance(conn: &Connection) -> Result<f64> {
     let total: f64 = conn.query_row(

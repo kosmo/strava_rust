@@ -54,6 +54,10 @@ pub async fn serve_map_server(
         println!("Added/updated {} tile entries", new_tiles);
     }
 
+    // One-time recompute of stored elevation gain using the noise-filtered
+    // algorithm, so previously imported activities match the new calculation.
+    recalculate_imported_elevations(&mut conn, &gpx_dir);
+
     let total_tiles = database::get_tile_count(&conn)?;
     println!("Total tiles in database: {}", total_tiles);
 
@@ -461,6 +465,51 @@ fn calculate_distance_from_content(content: &str) -> f64 {
     (total_km * 100.0).round() / 100.0
 }
 
+/// Recompute and persist the elevation gain of every imported activity from its
+/// GPX file using the current noise-filtered algorithm. Runs only once, guarded
+/// by a marker in the `meta` table so it doesn't re-run on every startup.
+fn recalculate_imported_elevations(conn: &mut rusqlite::Connection, gpx_dir: &PathBuf) {
+    // Bump this when the elevation algorithm changes to trigger another recompute.
+    const ELEVATION_ALGO_VERSION: &str = "3";
+
+    if database::get_meta(conn, "elevation_algo_version").as_deref() == Some(ELEVATION_ALGO_VERSION)
+    {
+        return;
+    }
+
+    let imported = match database::get_all_imported(conn) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    println!(
+        "Recalculating elevation gain for {} imported activities...",
+        imported.len()
+    );
+
+    let mut updated = 0;
+    for (activity_id, _source) in &imported {
+        // The same activity_id may be stored as a Strava or Garmin GPX file.
+        let candidates = [
+            gpx_dir.join(format!("activity_{}.gpx", activity_id)),
+            gpx_dir.join(format!("garmin_{}.gpx", activity_id)),
+        ];
+        let content = candidates.iter().find_map(|p| fs::read_to_string(p).ok());
+        let content = match content {
+            Some(c) => c,
+            None => continue,
+        };
+
+        let elevation = calculate_elevation_gain(&content);
+        if database::update_activity_elevation(conn, activity_id, elevation).is_ok() {
+            updated += 1;
+        }
+    }
+
+    println!("Updated elevation gain for {} activities", updated);
+    let _ = database::set_meta(conn, "elevation_algo_version", ELEVATION_ALGO_VERSION);
+}
+
 fn calculate_elevation_gain(content: &str) -> i32 {
     let mut elevations: Vec<f64> = Vec::new();
 
@@ -477,16 +526,9 @@ fn calculate_elevation_gain(content: &str) -> i32 {
         remaining = &remaining[start + 5..];
     }
 
-    // Sum only positive elevation changes (climbing)
-    let mut total_gain = 0.0;
-    for i in 1..elevations.len() {
-        let diff = elevations[i] - elevations[i - 1];
-        if diff > 0.0 {
-            total_gain += diff;
-        }
-    }
-
-    total_gain.round() as i32
+    // Sum positive elevation changes using a noise-filtering threshold so the
+    // result matches Strava/Garmin instead of over-counting GPS noise.
+    strava::elevation_gain_threshold(&elevations)
 }
 
 fn extract_attr(s: &str, attr: &str) -> Option<f64> {

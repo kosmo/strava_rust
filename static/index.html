@@ -1648,21 +1648,23 @@
 
       // Collect rides >= 1 km, sorted chronologically (oldest first)
       const rides = Object.keys(tracks)
-        .map(file => tracks[file])
-        .filter(t => t.distance_km != null && t.distance_km >= 1.0)
-        .sort((a, b) => (a.modified || 0) - (b.modified || 0));
+        .map(file => ({ file, t: tracks[file] }))
+        .filter(r => r.t.distance_km != null && r.t.distance_km >= 1.0)
+        .sort((a, b) => (a.t.modified || 0) - (b.t.modified || 0));
 
-      const labels = rides.map(t => t.date || '');
-      const speedData = rides.map(t => t.avg_moving_speed_kmh != null ? +t.avg_moving_speed_kmh.toFixed(1) : null);
-      const distanceData = rides.map(t => t.distance_km != null ? +t.distance_km.toFixed(2) : null);
-      const elevationData = rides.map(t => t.elevation_gain_m != null ? t.elevation_gain_m : null);
+      const titles = rides.map(r => r.t.title || r.t.date || '');
+      const labels = titles.map(t => t.slice(0, 15));
+      const files = rides.map(r => r.file);
+      const speedData = rides.map(r => r.t.avg_moving_speed_kmh != null ? +r.t.avg_moving_speed_kmh.toFixed(1) : null);
+      const distanceData = rides.map(r => r.t.distance_km != null ? +r.t.distance_km.toFixed(2) : null);
+      const elevationData = rides.map(r => r.t.elevation_gain_m != null ? r.t.elevation_gain_m : null);
 
-      drawBarChart('chart-speed', 'speed', labels, speedData, 'km/h', '#fc4c02');
-      drawBarChart('chart-distance', 'distance', labels, distanceData, 'km', '#1e88e5');
-      drawBarChart('chart-elevation', 'elevation', labels, elevationData, 'hm', '#43a047');
+      drawBarChart('chart-speed', 'speed', labels, titles, files, speedData, 'km/h', '#fc4c02');
+      drawBarChart('chart-distance', 'distance', labels, titles, files, distanceData, 'km', '#1e88e5');
+      drawBarChart('chart-elevation', 'elevation', labels, titles, files, elevationData, 'hm', '#43a047');
     }
 
-    function drawBarChart(canvasId, key, labels, data, unit, color) {
+    function drawBarChart(canvasId, key, labels, titles, files, data, unit, color) {
       const ctx = document.getElementById(canvasId);
       if (!ctx) return;
       if (statCharts[key]) statCharts[key].destroy();
@@ -1681,10 +1683,21 @@
         options: {
           responsive: true,
           maintainAspectRatio: false,
+          onClick: (evt, elements) => {
+            if (!elements.length) return;
+            const file = files[elements[0].index];
+            if (!file) return;
+            switchTab('strecken');
+            selectTrack(file);
+          },
+          onHover: (evt, elements) => {
+            evt.native.target.style.cursor = elements.length ? 'pointer' : 'default';
+          },
           plugins: {
             legend: { display: false },
             tooltip: {
               callbacks: {
+                title: items => (items.length ? titles[items[0].dataIndex] : ''),
                 label: c => (c.parsed.y != null ? c.parsed.y + ' ' + unit : '–')
               }
             }

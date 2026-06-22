@@ -236,7 +236,9 @@ pub async fn export_activities_as_gpx(
         // Check if activity was already imported (unless --fetch-all is set)
         if !fetch_all {
             if let Some(conn) = db_conn {
-                if crate::database::is_activity_imported(conn, &id.to_string(), "strava").unwrap_or(false) {
+                if crate::database::is_activity_imported(conn, &id.to_string(), "strava")
+                    .unwrap_or(false)
+                {
                     println!("Skipping already imported activity {} - {}", id, name);
                     skipped_count += 1;
                     continue;
@@ -388,11 +390,61 @@ pub fn calculate_elevation_gain_from_streams(streams: &StreamSet) -> i32 {
         return 0;
     }
 
+    elevation_gain_threshold(altitude)
+}
+
+/// Minimum elevation change (in meters) before it counts towards total gain.
+/// Applied *after* smoothing, this small hysteresis matches the thresholds
+/// Strava and Garmin use on their (already smoothed/barometric) altitude data.
+const ELEVATION_THRESHOLD_M: f64 = 1.0;
+
+/// Radius (in samples) of the moving-average window used to smooth the raw
+/// altitude series before computing gain. Smoothing removes high-frequency
+/// GPS/barometric noise so the summed gain is close to what Strava and Garmin
+/// report, without the aggressive under-counting of a large bare threshold.
+const ELEVATION_SMOOTH_RADIUS: usize = 3;
+
+/// Smooth a series with a centered moving average of radius `ELEVATION_SMOOTH_RADIUS`.
+fn smooth_elevations(elevations: &[f64]) -> Vec<f64> {
+    let n = elevations.len();
+    let r = ELEVATION_SMOOTH_RADIUS;
+    if n == 0 || r == 0 {
+        return elevations.to_vec();
+    }
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let lo = i.saturating_sub(r);
+        let hi = (i + r + 1).min(n);
+        let window = &elevations[lo..hi];
+        let avg = window.iter().sum::<f64>() / window.len() as f64;
+        out.push(avg);
+    }
+    out
+}
+
+/// Compute total elevation gain from a series of elevation samples the way
+/// Strava and Garmin do: first smooth the altitude to remove sensor noise, then
+/// accumulate positive changes once they exceed a small hysteresis threshold.
+pub fn elevation_gain_threshold(elevations: &[f64]) -> i32 {
+    if elevations.len() < 2 {
+        return 0;
+    }
+
+    let smoothed = smooth_elevations(elevations);
+
     let mut total_gain = 0.0;
-    for i in 1..altitude.len() {
-        let diff = altitude[i] - altitude[i - 1];
-        if diff > 0.0 {
+    // Reference point tracking the most recent committed altitude / local low.
+    let mut reference = smoothed[0];
+
+    for &ele in &smoothed[1..] {
+        let diff = ele - reference;
+        if diff >= ELEVATION_THRESHOLD_M {
+            // Confirmed climb above the noise floor: commit it and step up.
             total_gain += diff;
+            reference = ele;
+        } else if diff < 0.0 {
+            // Descending: track the valley so the next climb is measured from it.
+            reference = ele;
         }
     }
 
