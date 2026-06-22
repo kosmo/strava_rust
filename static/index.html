@@ -2180,28 +2180,78 @@
             if (!isNaN(lat) && !isNaN(lon)) points.push({ lat, lon, t });
           });
 
-          const latlngs = points.map(p => [p.lat, p.lon]);
-
-          // Total elapsed speed
-          const times = points.map(p => p.t).filter(t => t !== null);
-          if (times.length >= 2) {
-            const elapsedH = (times[times.length - 1] - times[0]) / 3600000;
-            if (elapsedH > 0) tracks[file].avg_speed_kmh = fileInfo.distance_km / elapsedH;
+          // Split into continuous segments – skip GPS teleport jumps.
+          // A segment break is triggered when:
+          //   1. Time gap > 10 min AND distance > 200 m: covers "tracker off,
+          //      location changed, tracker on". The distance condition prevents
+          //      legitimate mid-ride pauses (GPS barely moves while standing)
+          //      from being split even when they exceed 10 minutes.
+          //   2. Implied speed > 100 km/h: catches short-duration GPS glitches.
+          //   3. No timestamps + distance > 500 m: fallback for GPX without times.
+          const MAX_GAP_MS = 10 * 60 * 1000; // 10 minutes
+          const MIN_JUMP_DIST_M = 200;             // must also have moved > 200 m
+          const MAX_JUMP_SPEED_MS = 28;             // m/s ≈ 100 km/h
+          const MAX_JUMP_DIST_M = 500;             // fallback without timestamps
+          const segments = [];
+          if (points.length > 0) {
+            let seg = [points[0]];
+            for (let i = 1; i < points.length; i++) {
+              const p1 = points[i - 1], p2 = points[i];
+              const distM = haversineMeters(p1.lat, p1.lon, p2.lat, p2.lon);
+              const dtMs = (p1.t && p2.t && p2.t > p1.t) ? p2.t - p1.t : null;
+              const isJump = dtMs !== null
+                ? (dtMs > MAX_GAP_MS && distM > MIN_JUMP_DIST_M) || distM / (dtMs / 1000) > MAX_JUMP_SPEED_MS
+                : distM > MAX_JUMP_DIST_M;
+              if (isJump) { segments.push(seg); seg = [p2]; } else { seg.push(p2); }
+            }
+            segments.push(seg);
           }
 
-          // Moving time: exclude segments where speed < 1 m/s (~3.6 km/h)
+          // Multi-segment polyline: Leaflet draws each sub-array as a separate
+          // line so jump gaps are never connected visually.
+          const latlngs = segments.map(seg => seg.map(p => [p.lat, p.lon]));
+
+          // Distance summed over valid segments only (jump segments excluded).
+          // Using GPS-derived distance instead of fileInfo.distance_km avoids
+          // inflated DB values that include the false jump leg.
+          let validDistM = 0;
+          for (const seg of segments) {
+            for (let i = 1; i < seg.length; i++) {
+              validDistM += haversineMeters(seg[i - 1].lat, seg[i - 1].lon, seg[i].lat, seg[i].lon);
+            }
+          }
+          const validDistKm = validDistM / 1000;
+
+          // Overwrite the DB distance with the GPS-derived value so the table,
+          // info panel, and statistics charts all show the cleaned distance.
+          tracks[file].distance_km = validDistKm;
+          const row = listEl.querySelector('tr[data-file="' + file + '"]');
+          if (row) row.cells[0].textContent = validDistKm.toFixed(2);
+
+          // Total elapsed time: sum each segment individually (jump gaps excluded)
+          let totalElapsedMs = 0;
+          for (const seg of segments) {
+            const ts = seg.map(p => p.t).filter(t => t !== null);
+            if (ts.length >= 2) totalElapsedMs += ts[ts.length - 1] - ts[0];
+          }
+          const elapsedH = totalElapsedMs / 3600000;
+          if (elapsedH > 0) tracks[file].avg_speed_kmh = validDistKm / elapsedH;
+
+          // Moving time: within each segment skip stopped intervals (< 1 m/s)
           const MOVING_THRESHOLD = 1.0; // m/s
           let movingMs = 0;
-          for (let i = 1; i < points.length; i++) {
-            const p1 = points[i - 1], p2 = points[i];
-            if (p1.t && p2.t && p2.t > p1.t) {
-              const dtS = (p2.t - p1.t) / 1000;
-              const distM = haversineMeters(p1.lat, p1.lon, p2.lat, p2.lon);
-              if (distM / dtS >= MOVING_THRESHOLD) movingMs += (p2.t - p1.t);
+          for (const seg of segments) {
+            for (let i = 1; i < seg.length; i++) {
+              const p1 = seg[i - 1], p2 = seg[i];
+              if (p1.t && p2.t && p2.t > p1.t) {
+                const dtS = (p2.t - p1.t) / 1000;
+                const distM = haversineMeters(p1.lat, p1.lon, p2.lat, p2.lon);
+                if (distM / dtS >= MOVING_THRESHOLD) movingMs += (p2.t - p1.t);
+              }
             }
           }
           const movingH = movingMs / 3600000;
-          if (movingH > 0) tracks[file].avg_moving_speed_kmh = fileInfo.distance_km / movingH;
+          if (movingH > 0) tracks[file].avg_moving_speed_kmh = validDistKm / movingH;
 
           // Keep statistics up to date if the user is viewing them while data loads
           if (currentTab === 'statistik') {
@@ -2212,7 +2262,7 @@
           // Update info panel if this is the selected track
           if (file === selectedTrackFile) {
             document.getElementById('ti-title').textContent = tracks[file].title || tracks[file].date || '';
-            document.getElementById('ti-dist').textContent = fileInfo.distance_km.toFixed(2);
+            document.getElementById('ti-dist').textContent = validDistKm.toFixed(2);
             document.getElementById('ti-avg').textContent = tracks[file].avg_speed_kmh != null ? tracks[file].avg_speed_kmh.toFixed(1) : '-';
             document.getElementById('ti-mavg').textContent = tracks[file].avg_moving_speed_kmh != null ? tracks[file].avg_moving_speed_kmh.toFixed(1) : '-';
             document.getElementById('ti-ele').textContent = fileInfo.elevation_gain_m;
