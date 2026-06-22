@@ -162,6 +162,42 @@
       margin-top: 2px;
     }
 
+    #statistik-view {
+      display: none;
+      position: absolute;
+      inset: 0;
+      z-index: 1100;
+      background: #f8f9fa;
+      overflow-y: auto;
+      padding: 20px;
+      box-sizing: border-box;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    #statistik-view.active {
+      display: block;
+    }
+
+    #statistik-view .stat-chart {
+      background: #fff;
+      border: 1px solid #dee2e6;
+      border-radius: 10px;
+      padding: 14px 16px 16px;
+      margin-bottom: 18px;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+    }
+
+    #statistik-view .stat-chart h4 {
+      margin: 0 0 10px 0;
+      font-size: 15px;
+      color: #333;
+    }
+
+    #statistik-view .stat-canvas-wrap {
+      position: relative;
+      height: 220px;
+    }
+
     .controls {
       margin-bottom: 10px;
       padding-bottom: 10px;
@@ -431,6 +467,7 @@
     <div class="tab-bar">
       <button class="tab-btn active" onclick="switchTab('karte')" id="tab-btn-karte">Karte</button>
       <button class="tab-btn" onclick="switchTab('strecken')" id="tab-btn-strecken">Strecken</button>
+      <button class="tab-btn" onclick="switchTab('statistik')" id="tab-btn-statistik">Statistik</button>
     </div>
     <div id="tab-karte" class="tab-content active">
       <div class="sync-bar">
@@ -522,6 +559,12 @@
         <tbody id="track-list"></tbody>
       </table>
     </div>
+    <div id="tab-statistik" class="tab-content">
+      <p style="color:#666; font-size:13px; line-height:1.5; margin:6px 2px;">
+        Auswertung aller Fahrten ab 1&nbsp;km. Die Diagramme zeigen den Verlauf
+        chronologisch (älteste Fahrt links).
+      </p>
+    </div>
   </div>
   <div id="map">
     <div id="track-info">
@@ -533,8 +576,23 @@
         <div class="ti-stat"><span class="ti-val" id="ti-ele">-</span><span class="ti-lbl">hm</span></div>
       </div>
     </div>
+    <div id="statistik-view">
+      <div class="stat-chart">
+        <h4>Ø Geschwindigkeit der Fahrten (km/h)</h4>
+        <div class="stat-canvas-wrap"><canvas id="chart-speed"></canvas></div>
+      </div>
+      <div class="stat-chart">
+        <h4>Zurückgelegte Kilometer</h4>
+        <div class="stat-canvas-wrap"><canvas id="chart-distance"></canvas></div>
+      </div>
+      <div class="stat-chart">
+        <h4>Höhenmeter</h4>
+        <div class="stat-canvas-wrap"><canvas id="chart-elevation"></canvas></div>
+      </div>
+    </div>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script>
     const map = L.map('map').setView([51.25, 12.14], 13);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -1543,6 +1601,8 @@
       document.getElementById('tab-btn-' + name).classList.add('active');
       document.getElementById('tab-' + name).classList.add('active');
       document.getElementById('track-info').style.display = (name === 'strecken') ? 'block' : 'none';
+      document.getElementById('statistik-view').classList.toggle('active', name === 'statistik');
+      if (name === 'statistik') renderStatistik();
       applyTabLayers();
     }
 
@@ -1578,6 +1638,63 @@
           map.fitBounds(tracks[selectedTrackFile].polyline.getBounds());
         }
       }
+    }
+
+    // ── Statistik charts ──────────────────────────────────────────────────────
+    const statCharts = {};
+
+    function renderStatistik() {
+      if (typeof Chart === 'undefined') return;
+
+      // Collect rides >= 1 km, sorted chronologically (oldest first)
+      const rides = Object.keys(tracks)
+        .map(file => tracks[file])
+        .filter(t => t.distance_km != null && t.distance_km >= 1.0)
+        .sort((a, b) => (a.modified || 0) - (b.modified || 0));
+
+      const labels = rides.map(t => t.date || '');
+      const speedData = rides.map(t => t.avg_moving_speed_kmh != null ? +t.avg_moving_speed_kmh.toFixed(1) : null);
+      const distanceData = rides.map(t => t.distance_km != null ? +t.distance_km.toFixed(2) : null);
+      const elevationData = rides.map(t => t.elevation_gain_m != null ? t.elevation_gain_m : null);
+
+      drawBarChart('chart-speed', 'speed', labels, speedData, 'km/h', '#fc4c02');
+      drawBarChart('chart-distance', 'distance', labels, distanceData, 'km', '#1e88e5');
+      drawBarChart('chart-elevation', 'elevation', labels, elevationData, 'hm', '#43a047');
+    }
+
+    function drawBarChart(canvasId, key, labels, data, unit, color) {
+      const ctx = document.getElementById(canvasId);
+      if (!ctx) return;
+      if (statCharts[key]) statCharts[key].destroy();
+      statCharts[key] = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: unit,
+            data: data,
+            backgroundColor: color,
+            borderRadius: 3,
+            maxBarThickness: 28
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: c => (c.parsed.y != null ? c.parsed.y + ' ' + unit : '–')
+              }
+            }
+          },
+          scales: {
+            x: { ticks: { autoSkip: true, maxRotation: 60, minRotation: 0, font: { size: 10 } } },
+            y: { beginAtZero: true, title: { display: true, text: unit } }
+          }
+        }
+      });
     }
 
     function selectTrack(file) {
@@ -1882,6 +1999,7 @@
           avg_speed_kmh: null,
           avg_moving_speed_kmh: null,
           date: formatDate(fileInfo.modified),
+          modified: fileInfo.modified,
           title: fileInfo.title || ''
         };
 
@@ -1941,6 +2059,9 @@
           }
           const movingH = movingMs / 3600000;
           if (movingH > 0) tracks[file].avg_moving_speed_kmh = fileInfo.distance_km / movingH;
+
+          // Keep statistics up to date if the user is viewing them while data loads
+          if (currentTab === 'statistik') renderStatistik();
 
           // Update info panel if this is the selected track
           if (file === selectedTrackFile) {
