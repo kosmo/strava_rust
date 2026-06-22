@@ -164,11 +164,14 @@
 
     #statistik-view {
       display: none;
-      position: absolute;
-      inset: 0;
+      position: fixed;
+      top: 0;
+      left: 300px;
+      right: 0;
+      bottom: 0;
       z-index: 1100;
       background: #f8f9fa;
-      overflow-y: auto;
+      overflow-y: scroll;
       padding: 20px;
       box-sizing: border-box;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -418,6 +421,45 @@
       font-size: 12px;
     }
 
+    .stat-sub-tab-bar {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 14px;
+      border-bottom: 2px solid #dee2e6;
+      padding-bottom: 4px;
+    }
+
+    .stat-sub-tab {
+      padding: 5px 16px;
+      border: none;
+      background: none;
+      cursor: pointer;
+      font-size: 13px;
+      font-family: inherit;
+      color: #666;
+      border-radius: 4px 4px 0 0;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .stat-sub-tab:hover {
+      background: #e9ecef;
+      color: #333;
+    }
+
+    .stat-sub-tab.active {
+      background: #28a745;
+      color: white;
+      font-weight: bold;
+    }
+
+    .stat-sub-content {
+      display: none;
+    }
+
+    .stat-sub-content.active {
+      display: block;
+    }
+
     @keyframes spin {
       from {
         transform: rotate(0deg);
@@ -560,10 +602,11 @@
       </table>
     </div>
     <div id="tab-statistik" class="tab-content">
-      <p style="color:#666; font-size:13px; line-height:1.5; margin:6px 2px;">
-        Auswertung aller Fahrten ab 1&nbsp;km. Die Diagramme zeigen den Verlauf
-        chronologisch (älteste Fahrt links).
-      </p>
+      <div class="stat-sub-tab-bar">
+        <button class="stat-sub-tab active" onclick="switchStatTab('fahrten')"
+          id="stat-tab-btn-fahrten">Fahrten</button>
+        <button class="stat-sub-tab" onclick="switchStatTab('monate')" id="stat-tab-btn-monate">Monate</button>
+      </div>
     </div>
   </div>
   <div id="map">
@@ -576,7 +619,13 @@
         <div class="ti-stat"><span class="ti-val" id="ti-ele">-</span><span class="ti-lbl">hm</span></div>
       </div>
     </div>
-    <div id="statistik-view">
+  </div>
+  <div id="statistik-view">
+    <div id="stat-tab-fahrten" class="stat-sub-content active">
+      <p style="color:#666; font-size:13px; line-height:1.5; margin:0 0 12px 0;">
+        Auswertung aller Fahrten ab 1&nbsp;km. Die Diagramme zeigen den Verlauf
+        chronologisch (älteste Fahrt links).
+      </p>
       <div class="stat-chart">
         <h4>Ø Geschwindigkeit der Fahrten (km/h)</h4>
         <div class="stat-canvas-wrap"><canvas id="chart-speed"></canvas></div>
@@ -588,6 +637,23 @@
       <div class="stat-chart">
         <h4>Höhenmeter</h4>
         <div class="stat-canvas-wrap"><canvas id="chart-elevation"></canvas></div>
+      </div>
+    </div>
+    <div id="stat-tab-monate" class="stat-sub-content">
+      <p style="color:#666; font-size:13px; line-height:1.5; margin:0 0 12px 0;">
+        Monatliche Auswertung der letzten 12 Monate (Fahrten ab 1&nbsp;km).
+      </p>
+      <div class="stat-chart">
+        <h4>Ø Geschwindigkeit pro Monat (km/h)</h4>
+        <div class="stat-canvas-wrap"><canvas id="chart-month-speed"></canvas></div>
+      </div>
+      <div class="stat-chart">
+        <h4>Kilometer pro Monat</h4>
+        <div class="stat-canvas-wrap"><canvas id="chart-month-distance"></canvas></div>
+      </div>
+      <div class="stat-chart">
+        <h4>Höhenmeter pro Monat</h4>
+        <div class="stat-canvas-wrap"><canvas id="chart-month-elevation"></canvas></div>
       </div>
     </div>
   </div>
@@ -1602,12 +1668,26 @@
       document.getElementById('tab-' + name).classList.add('active');
       document.getElementById('track-info').style.display = (name === 'strecken') ? 'block' : 'none';
       document.getElementById('statistik-view').classList.toggle('active', name === 'statistik');
-      if (name === 'statistik') renderStatistik();
+      if (name === 'statistik') {
+        if (currentStatTab === 'fahrten') renderStatistik();
+        else renderMonthlyStatistik();
+      }
       applyTabLayers();
     }
 
     let currentTab = 'karte';
+    let currentStatTab = 'fahrten';
     let selectedTrackFile = null;
+
+    function switchStatTab(name) {
+      currentStatTab = name;
+      document.querySelectorAll('.stat-sub-tab').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.stat-sub-content').forEach(c => c.classList.remove('active'));
+      document.getElementById('stat-tab-btn-' + name).classList.add('active');
+      document.getElementById('stat-tab-' + name).classList.add('active');
+      if (name === 'fahrten') renderStatistik();
+      else renderMonthlyStatistik();
+    }
 
     function applyTabLayers() {
       if (currentTab === 'karte') {
@@ -1662,6 +1742,51 @@
       drawBarChart('chart-speed', 'speed', labels, titles, files, speedData, 'km/h', '#fc4c02');
       drawBarChart('chart-distance', 'distance', labels, titles, files, distanceData, 'km', '#1e88e5');
       drawBarChart('chart-elevation', 'elevation', labels, titles, files, elevationData, 'hm', '#43a047');
+    }
+
+    function renderMonthlyStatistik() {
+      if (typeof Chart === 'undefined') return;
+
+      // Build the last 12 calendar months, oldest first
+      const now = new Date();
+      const months = [];
+      for (let i = 11; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        months.push({
+          year: d.getFullYear(),
+          month: d.getMonth(),
+          label: d.toLocaleDateString('de-DE', { month: 'short', year: '2-digit' }),
+          rides: []
+        });
+      }
+
+      // Assign rides >= 1 km to their month bucket
+      Object.keys(tracks).forEach(file => {
+        const t = tracks[file];
+        if (!t.distance_km || t.distance_km < 1.0) return;
+        const d = new Date(t.modified * 1000);
+        const bucket = months.find(m => m.year === d.getFullYear() && m.month === d.getMonth());
+        if (bucket) bucket.rides.push(t);
+      });
+
+      const labels = months.map(m => m.label);
+      const speedData = months.map(m => {
+        const speeds = m.rides.filter(r => r.avg_moving_speed_kmh != null).map(r => r.avg_moving_speed_kmh);
+        if (!speeds.length) return null;
+        return +(speeds.reduce((a, b) => a + b, 0) / speeds.length).toFixed(1);
+      });
+      const distanceData = months.map(m => {
+        if (!m.rides.length) return null;
+        return +m.rides.reduce((s, r) => s + (r.distance_km || 0), 0).toFixed(1);
+      });
+      const elevationData = months.map(m => {
+        if (!m.rides.length) return null;
+        return m.rides.reduce((s, r) => s + (r.elevation_gain_m || 0), 0);
+      });
+
+      drawBarChart('chart-month-speed', 'month-speed', labels, labels, [], speedData, 'km/h', '#fc4c02');
+      drawBarChart('chart-month-distance', 'month-distance', labels, labels, [], distanceData, 'km', '#1e88e5');
+      drawBarChart('chart-month-elevation', 'month-elevation', labels, labels, [], elevationData, 'hm', '#43a047');
     }
 
     function drawBarChart(canvasId, key, labels, titles, files, data, unit, color) {
@@ -1865,6 +1990,11 @@
       if (isAuthenticated) syncStrava();
     });
     checkGarminAuthStatus();
+
+    // Prevent Leaflet's wheel handler from blocking scroll in the statistics overlay
+    document.getElementById('statistik-view').addEventListener('wheel', function (e) {
+      e.stopPropagation();
+    }, { passive: true });
 
     // ── Garmin Connect ──────────────────────────────────────────────────────
 
@@ -2074,7 +2204,10 @@
           if (movingH > 0) tracks[file].avg_moving_speed_kmh = fileInfo.distance_km / movingH;
 
           // Keep statistics up to date if the user is viewing them while data loads
-          if (currentTab === 'statistik') renderStatistik();
+          if (currentTab === 'statistik') {
+            if (currentStatTab === 'fahrten') renderStatistik();
+            else renderMonthlyStatistik();
+          }
 
           // Update info panel if this is the selected track
           if (file === selectedTrackFile) {
