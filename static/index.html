@@ -748,15 +748,43 @@
       fetch('/stats').then(r => r.json()).then(data => {
         document.getElementById('total-distance').textContent = data.total_distance_km.toFixed(2);
         document.getElementById('total-elevation').textContent = data.total_elevation_m.toLocaleString('de-DE');
-        document.getElementById('activity-count').textContent = data.activity_count;
-        document.getElementById('eddington').textContent = data.eddington;
         document.getElementById('max-square').textContent = data.max_square + 'x' + data.max_square;
         document.getElementById('max-cluster').textContent = data.max_cluster;
       }).catch(e => console.error('Failed to load stats:', e));
     }
 
+    // Restore Eddington and activity count from last session immediately,
+    // so there is no visible jump on startup.
+    (function restoreCachedStats() {
+      const e = localStorage.getItem('rs_eddington');
+      const c = localStorage.getItem('rs_activity_count');
+      if (e !== null) document.getElementById('eddington').textContent = e;
+      if (c !== null) document.getElementById('activity-count').textContent = c;
+    })();
+
     // Load stats on page load
     loadStats();
+
+    // Recalculate Eddington number from the (deduplicated) loaded GPX tracks.
+    // This replaces the DB-based value from /stats which can count the same
+    // physical ride twice when it was imported from both Strava and Garmin.
+    function updateEddington() {
+      const eligible = Object.values(tracks)
+        .filter(t => t.distance_km != null && t.distance_km >= 1.0);
+      document.getElementById('activity-count').textContent = eligible.length;
+      const distances = eligible.map(t => t.distance_km).sort((a, b) => b - a);
+      let e = 0;
+      for (let i = 0; i < distances.length; i++) {
+        if (Math.floor(distances[i]) >= i + 1) {
+          e = i + 1;
+        } else {
+          break;
+        }
+      }
+      document.getElementById('eddington').textContent = e;
+      localStorage.setItem('rs_eddington', e);
+      localStorage.setItem('rs_activity_count', eligible.length);
+    }
 
     // Load and display visited tiles
     function loadTiles() {
@@ -2227,6 +2255,7 @@
           tracks[file].distance_km = validDistKm;
           const row = listEl.querySelector('tr[data-file="' + file + '"]');
           if (row) row.cells[0].textContent = validDistKm.toFixed(2);
+          updateEddington();
 
           // Total elapsed time: sum each segment individually (jump gaps excluded)
           let totalElapsedMs = 0;
@@ -2283,6 +2312,10 @@
           }
         });
       });
+      // After all track objects are initialised with fileInfo.distance_km,
+      // show correct Eddington and activity count immediately (before individual
+      // GPX files are parsed). Both values are refined as each file is processed.
+      updateEddington();
     });
   </script>
 </body>
