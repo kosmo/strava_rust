@@ -96,6 +96,10 @@ pub fn init_db() -> Result<(Connection, bool)> {
         [],
     );
     let _ = conn.execute(
+        "ALTER TABLE imported_activities ADD COLUMN activity_type TEXT",
+        [],
+    );
+    let _ = conn.execute(
         "ALTER TABLE tiles ADD COLUMN visit_count INTEGER NOT NULL DEFAULT 1",
         [],
     );
@@ -317,6 +321,7 @@ pub fn mark_activity_imported(
     activity_name: Option<&str>,
     distance_km: f64,
     elevation_gain_m: i32,
+    activity_type: Option<&str>,
 ) -> Result<()> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -324,10 +329,53 @@ pub fn mark_activity_imported(
         .as_secs() as i64;
 
     conn.execute(
-        "INSERT OR IGNORE INTO imported_activities (activity_id, source, activity_name, imported_at, distance_km, elevation_gain_m) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![activity_id, source, activity_name, now, distance_km, elevation_gain_m],
+        "INSERT OR IGNORE INTO imported_activities (activity_id, source, activity_name, imported_at, distance_km, elevation_gain_m, activity_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![activity_id, source, activity_name, now, distance_km, elevation_gain_m, activity_type],
     )?;
     Ok(())
+}
+
+/// Get the stored activity_type for a given activity_id (any source).
+pub fn get_activity_type(conn: &Connection, activity_id: &str) -> Result<Option<String>> {
+    let mut stmt = conn
+        .prepare("SELECT activity_type FROM imported_activities WHERE activity_id = ?1 LIMIT 1")?;
+    let mut rows = stmt.query(params![activity_id])?;
+    if let Some(row) = rows.next()? {
+        Ok(row.get(0)?)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Update the stored activity_type for an already imported activity.
+pub fn update_activity_type(
+    conn: &Connection,
+    activity_id: &str,
+    activity_type: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE imported_activities SET activity_type = ?1 WHERE activity_id = ?2",
+        params![activity_type, activity_id],
+    )?;
+    Ok(())
+}
+
+/// Get a map of activity_id → activity_type for all imported activities that have a type.
+pub fn get_all_activity_types(
+    conn: &Connection,
+) -> Result<std::collections::HashMap<String, String>> {
+    let mut stmt = conn.prepare(
+        "SELECT activity_id, activity_type FROM imported_activities WHERE activity_type IS NOT NULL AND activity_type != ''",
+    )?;
+    let pairs = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut map = std::collections::HashMap::new();
+    for pair in pairs {
+        let (id, ty) = pair?;
+        map.insert(id, ty);
+    }
+    Ok(map)
 }
 
 /// Get a map of activity_id → activity_name for all imported activities that have a name.

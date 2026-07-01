@@ -138,6 +138,16 @@
       color: #333;
     }
 
+    #track-info .ti-type {
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 8px;
+    }
+
+    #track-info .ti-type:empty {
+      display: none;
+    }
+
     #track-info .ti-stats {
       display: flex;
       gap: 24px;
@@ -612,6 +622,7 @@
   <div id="map">
     <div id="track-info">
       <div class="ti-title" id="ti-title"></div>
+      <div class="ti-type" id="ti-type"></div>
       <div class="ti-stats">
         <div class="ti-stat"><span class="ti-val" id="ti-dist">-</span><span class="ti-lbl">km</span></div>
         <div class="ti-stat"><span class="ti-val" id="ti-avg">-</span><span class="ti-lbl">km/h Ø ges.</span></div>
@@ -1763,13 +1774,16 @@
       const titles = rides.map(r => r.t.title || r.t.date || '');
       const labels = titles.map(t => t.slice(0, 15));
       const files = rides.map(r => r.file);
+      const typeKeys = rides.map(r => r.t.activity_type || '');
+      const colors = typeKeys.map(activityTypeColor);
+      const typeLabels = typeKeys.map(activityTypeLabel);
       const speedData = rides.map(r => r.t.avg_moving_speed_kmh != null ? +r.t.avg_moving_speed_kmh.toFixed(1) : null);
       const distanceData = rides.map(r => r.t.distance_km != null ? +r.t.distance_km.toFixed(2) : null);
       const elevationData = rides.map(r => r.t.elevation_gain_m != null ? r.t.elevation_gain_m : null);
 
-      drawBarChart('chart-speed', 'speed', labels, titles, files, speedData, 'km/h', '#fc4c02');
-      drawBarChart('chart-distance', 'distance', labels, titles, files, distanceData, 'km', '#1e88e5');
-      drawBarChart('chart-elevation', 'elevation', labels, titles, files, elevationData, 'hm', '#43a047');
+      drawBarChart('chart-speed', 'speed', labels, titles, files, speedData, 'km/h', colors, typeLabels);
+      drawBarChart('chart-distance', 'distance', labels, titles, files, distanceData, 'km', colors, typeLabels);
+      drawBarChart('chart-elevation', 'elevation', labels, titles, files, elevationData, 'hm', colors, typeLabels);
     }
 
     function renderMonthlyStatistik() {
@@ -1798,6 +1812,14 @@
       });
 
       const labels = months.map(m => m.label);
+      // Share of mountain-bike rides per month (0..1) → drives the orange
+      // portion of each stacked bar; the rest (road + untyped) stays gray.
+      const mtbFrac = months.map(m => {
+        if (!m.rides.length) return 0;
+        const mtb = m.rides.filter(r => (r.activity_type || '') === 'mountain_biking').length;
+        return mtb / m.rides.length;
+      });
+      const typeLabels = months.map(m => typeBreakdownLabel(m.rides));
       const speedData = months.map(m => {
         const speeds = m.rides.filter(r => r.avg_moving_speed_kmh != null).map(r => r.avg_moving_speed_kmh);
         if (!speeds.length) return null;
@@ -1812,12 +1834,12 @@
         return m.rides.reduce((s, r) => s + (r.elevation_gain_m || 0), 0);
       });
 
-      drawBarChart('chart-month-speed', 'month-speed', labels, labels, [], speedData, 'km/h', '#fc4c02');
-      drawBarChart('chart-month-distance', 'month-distance', labels, labels, [], distanceData, 'km', '#1e88e5');
-      drawBarChart('chart-month-elevation', 'month-elevation', labels, labels, [], elevationData, 'hm', '#43a047');
+      drawStackedMonthChart('chart-month-speed', 'month-speed', labels, speedData, mtbFrac, typeLabels, 'km/h', 'Ø ');
+      drawStackedMonthChart('chart-month-distance', 'month-distance', labels, distanceData, mtbFrac, typeLabels, 'km', '');
+      drawStackedMonthChart('chart-month-elevation', 'month-elevation', labels, elevationData, mtbFrac, typeLabels, 'hm', '');
     }
 
-    function drawBarChart(canvasId, key, labels, titles, files, data, unit, color) {
+    function drawBarChart(canvasId, key, labels, titles, files, data, unit, colors, types) {
       const ctx = document.getElementById(canvasId);
       if (!ctx) return;
       if (statCharts[key]) statCharts[key].destroy();
@@ -1828,7 +1850,7 @@
           datasets: [{
             label: unit,
             data: data,
-            backgroundColor: color,
+            backgroundColor: colors,
             borderRadius: 3,
             maxBarThickness: 28
           }]
@@ -1851,7 +1873,11 @@
             tooltip: {
               callbacks: {
                 title: items => (items.length ? titles[items[0].dataIndex] : ''),
-                label: c => (c.parsed.y != null ? c.parsed.y + ' ' + unit : '–')
+                label: c => (c.parsed.y != null ? c.parsed.y + ' ' + unit : '–'),
+                afterLabel: c => {
+                  const ty = types ? types[c.dataIndex] : '';
+                  return ty ? ['Typ: ' + ty] : [];
+                }
               }
             }
           },
@@ -1863,6 +1889,123 @@
       });
     }
 
+    // Monthly bar split into two stacked segments proportional to the ride mix:
+    // orange = share of mountain-bike rides, gray = the rest (road + untyped).
+    function drawStackedMonthChart(canvasId, key, labels, totals, mtbFrac, breakdowns, unit, valuePrefix) {
+      const ctx = document.getElementById(canvasId);
+      if (!ctx) return;
+      if (statCharts[key]) statCharts[key].destroy();
+      const roadData = totals.map((v, i) => v == null ? null : +(v * (1 - mtbFrac[i])).toFixed(2));
+      const mtbData = totals.map((v, i) => v == null ? null : +(v * mtbFrac[i]).toFixed(2));
+      statCharts[key] = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [
+            { label: 'Rennrad', data: roadData, backgroundColor: CHART_COLOR_ROAD, stack: 's', maxBarThickness: 28 },
+            { label: 'Mountainbike', data: mtbData, backgroundColor: CHART_COLOR_MTB, stack: 's', maxBarThickness: 28 }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title: items => (items.length ? labels[items[0].dataIndex] : ''),
+                label: c => {
+                  const frac = c.datasetIndex === 1 ? mtbFrac[c.dataIndex] : (1 - mtbFrac[c.dataIndex]);
+                  return c.dataset.label + ': ' + Math.round(frac * 100) + '%';
+                },
+                afterBody: items => {
+                  if (!items.length) return [];
+                  const i = items[0].dataIndex;
+                  const lines = [];
+                  if (totals[i] != null) lines.push('Wert: ' + valuePrefix + totals[i] + ' ' + unit);
+                  if (breakdowns[i]) lines.push(breakdowns[i]);
+                  return lines;
+                }
+              }
+            }
+          },
+          scales: {
+            x: { stacked: true, ticks: { autoSkip: true, maxRotation: 60, minRotation: 0, font: { size: 10 } } },
+            y: { stacked: true, beginAtZero: true, title: { display: true, text: unit } }
+          }
+        }
+      });
+    }
+
+    // Map a Garmin activity type key to a German label for the info block.
+    const ACTIVITY_TYPE_LABELS = {
+      cycling: 'Radfahren',
+      road_biking: 'Rennrad',
+      mountain_biking: 'Mountainbike',
+      gravel_cycling: 'Gravel',
+      cyclocross: 'Cyclocross',
+      indoor_cycling: 'Indoor-Radfahren',
+      virtual_ride: 'Virtuelle Fahrt',
+      bmx: 'BMX',
+      e_bike_fitness: 'E-Bike',
+      e_bike_mountain: 'E-Mountainbike',
+      running: 'Laufen',
+      trail_running: 'Trailrunning',
+      treadmill_running: 'Laufband',
+      walking: 'Gehen',
+      hiking: 'Wandern',
+      swimming: 'Schwimmen',
+      lap_swimming: 'Bahnenschwimmen',
+      open_water_swimming: 'Freiwasserschwimmen'
+    };
+
+    function activityTypeLabel(typeKey) {
+      if (!typeKey) return '';
+      if (ACTIVITY_TYPE_LABELS[typeKey]) return ACTIVITY_TYPE_LABELS[typeKey];
+      // Fallback: prettify the raw key (e.g. "road_biking" → "Road Biking").
+      return typeKey
+        .split('_')
+        .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(' ');
+    }
+
+    // Shared chart colors: orange for mountain biking, gray for road biking
+    // (and every other/unknown type) so all statistics charts look consistent.
+    const CHART_COLOR_MTB = '#fc4c02';   // orange (from the original speed chart)
+    const CHART_COLOR_ROAD = '#9e9e9e';  // gray
+
+    function activityTypeColor(typeKey) {
+      return typeKey === 'mountain_biking' ? CHART_COLOR_MTB : CHART_COLOR_ROAD;
+    }
+
+    // Count activity types among a list of track objects → { typeKey: count }.
+    function typeBreakdown(rides) {
+      const counts = {};
+      rides.forEach(r => {
+        const k = r.activity_type || '';
+        if (k) counts[k] = (counts[k] || 0) + 1;
+      });
+      return counts;
+    }
+
+    // Most frequent activity type key in a list of rides ('' if none).
+    function dominantTypeKey(rides) {
+      const counts = typeBreakdown(rides);
+      let best = '', bestN = 0;
+      for (const k in counts) {
+        if (counts[k] > bestN) { bestN = counts[k]; best = k; }
+      }
+      return best;
+    }
+
+    // Human-readable type breakdown, e.g. "5× Rennrad, 2× Mountainbike".
+    function typeBreakdownLabel(rides) {
+      const counts = typeBreakdown(rides);
+      return Object.keys(counts)
+        .map(k => counts[k] + '× ' + activityTypeLabel(k))
+        .join(', ');
+    }
+
     function selectTrack(file) {
       selectedTrackFile = file;
       document.querySelectorAll('#track-list tr').forEach(tr => {
@@ -1872,6 +2015,7 @@
       const t = tracks[file];
       if (t) {
         document.getElementById('ti-title').textContent = t.title || t.date || '';
+        document.getElementById('ti-type').textContent = activityTypeLabel(t.activity_type);
         document.getElementById('ti-dist').textContent = t.distance_km != null ? t.distance_km.toFixed(2) : '-';
         document.getElementById('ti-avg').textContent = t.avg_speed_kmh != null ? t.avg_speed_kmh.toFixed(1) : '-';
         document.getElementById('ti-mavg').textContent = t.avg_moving_speed_kmh != null ? t.avg_moving_speed_kmh.toFixed(1) : '-';
@@ -2013,11 +2157,12 @@
       }
     }
 
-    // Check auth on load, then auto-sync if already authenticated
-    checkAuthStatus().then(() => {
-      if (isAuthenticated) syncStrava();
+    // Check Strava auth on load (manual fallback – no auto-sync).
+    checkAuthStatus();
+    // Auto-sync with Garmin Connect on startup if credentials are available.
+    checkGarminAuthStatus().then(() => {
+      if (isGarminAuthenticated || garminHasCredentials) doGarminSync();
     });
-    checkGarminAuthStatus();
 
     // Prevent Leaflet's wheel handler from blocking scroll in the statistics overlay
     document.getElementById('statistik-view').addEventListener('wheel', function (e) {
@@ -2171,7 +2316,8 @@
           avg_moving_speed_kmh: null,
           date: formatDate(fileInfo.modified),
           modified: fileInfo.modified,
-          title: fileInfo.title || ''
+          title: fileInfo.title || '',
+          activity_type: fileInfo.activity_type || ''
         };
 
         // Only show in table if >= 1 km

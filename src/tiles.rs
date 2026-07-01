@@ -324,6 +324,7 @@ pub fn process_gpx_file(
         Some(activity_title.as_str()),
         distance_km,
         elevation_gain_m,
+        None,
     );
 
     Ok(count)

@@ -33,6 +33,8 @@ struct GpxFileInfo {
     distance_km: f64,
     elevation_gain_m: i32,
     title: String,
+    /// Garmin activity type key (e.g. `road_biking`), empty if unknown.
+    activity_type: String,
 }
 
 pub async fn serve_map_server(
@@ -182,6 +184,12 @@ async fn list_gpx_files() -> Json<Vec<GpxFileInfo>> {
         .and_then(|(conn, _)| database::get_all_activity_names(&conn).ok())
         .unwrap_or_default();
 
+    // Load DB activity types (numeric_id → type_key) for display in the info block.
+    let db_types: std::collections::HashMap<String, String> = database::init_db()
+        .ok()
+        .and_then(|(conn, _)| database::get_all_activity_types(&conn).ok())
+        .unwrap_or_default();
+
     // First pass: collect all Garmin files and build two maps:
     //   start_timestamp → garmin_title   (for title matching)
     //   start_timestamp → true           (for deduplication: skip matching Strava files)
@@ -279,12 +287,15 @@ async fn list_gpx_files() -> Json<Vec<GpxFileInfo>> {
                 .filter(|s| !s.is_empty())
                 .unwrap_or(gpx_title);
 
+            let activity_type = db_types.get(db_key).cloned().unwrap_or_default();
+
             files.push(GpxFileInfo {
                 filename: name.to_string(),
                 modified,
                 distance_km,
                 elevation_gain_m,
                 title,
+                activity_type,
             });
         }
     }
@@ -837,6 +848,7 @@ async fn fetch_activities(
                     name.as_deref(),
                     *distance_km,
                     *elevation_gain_m,
+                    None,
                 ) {
                     eprintln!("Warning: Failed to mark activity {} as imported: {}", id, e);
                 }
@@ -1393,7 +1405,8 @@ async fn fetch_garmin_activities(
 
     let mut imported_count: u32 = 0;
     let mut title_updated_count: u32 = 0;
-    let mut imported_records: Vec<(String, String, f64, i32)> = Vec::new();
+    let mut type_updated_count: u32 = 0;
+    let mut imported_records: Vec<(String, String, f64, i32, String)> = Vec::new();
 
     for act in &activities {
         let id_str = act.activity_id.to_string();
@@ -1424,6 +1437,22 @@ async fn fetch_garmin_activities(
                     }
                 }
             }
+            // Backfill / refresh the activity type from Garmin.
+            if !act.activity_type.type_key.is_empty() {
+                if let Ok((conn, _)) = database::init_db() {
+                    let old_type = database::get_activity_type(&conn, &id_str)
+                        .unwrap_or(None)
+                        .unwrap_or_default();
+                    if old_type != act.activity_type.type_key {
+                        let _ = database::update_activity_type(
+                            &conn,
+                            &id_str,
+                            &act.activity_type.type_key,
+                        );
+                        type_updated_count += 1;
+                    }
+                }
+            }
             continue;
         }
 
@@ -1447,6 +1476,7 @@ async fn fetch_garmin_activities(
                     act.activity_name.clone(),
                     distance_km,
                     elevation_gain_m,
+                    act.activity_type.type_key.clone(),
                 ));
                 imported_count += 1;
             }
@@ -1457,7 +1487,7 @@ async fn fetch_garmin_activities(
     // Mark in DB and process tiles
     if !imported_records.is_empty() {
         if let Ok((conn, _)) = database::init_db() {
-            for (id, name, dist, elev) in &imported_records {
+            for (id, name, dist, elev, ty) in &imported_records {
                 let _ = database::mark_activity_imported(
                     &conn,
                     id,
@@ -1465,6 +1495,7 @@ async fn fetch_garmin_activities(
                     Some(name.as_str()),
                     *dist,
                     *elev,
+                    if ty.is_empty() { None } else { Some(ty.as_str()) },
                 );
             }
         }
@@ -1473,7 +1504,13 @@ async fn fetch_garmin_activities(
     }
 
     let message = match (imported_count, title_updated_count) {
-        (0, 0) => "Keine Änderungen.".to_string(),
+        (0, 0) => {
+            if type_updated_count > 0 {
+                format!("{} Aktivitätsarten von Garmin übernommen", type_updated_count)
+            } else {
+                "Keine Änderungen.".to_string()
+            }
+        }
         (i, 0) => format!("{} Garmin-Aktivitäten importiert", i),
         (0, t) => format!("{} Titel von Garmin aktualisiert", t),
         (i, t) => format!(
@@ -1485,6 +1522,8 @@ async fn fetch_garmin_activities(
         success: true,
         message,
         imported: imported_count,
-        skipped: title_updated_count,
+        // `skipped` doubles as the “something changed, refresh the UI” signal for
+        // the frontend: title updates + newly backfilled activity types.
+        skipped: title_updated_count + type_updated_count,
     })
 }

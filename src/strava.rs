@@ -275,6 +275,7 @@ pub async fn export_activities_as_gpx(
                         act.name.as_deref(),
                         distance_km,
                         elevation_gain_m,
+                        None,
                     ) {
                         eprintln!("Warning: Failed to mark activity {} as imported: {}", id, e);
                     }

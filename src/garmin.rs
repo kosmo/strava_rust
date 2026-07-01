@@ -28,6 +28,17 @@ pub struct GarminActivity {
     pub distance: f64,
     #[serde(rename = "elevationGain", default)]
     pub elevation_gain: f64,
+    /// Activity type, e.g. `road_biking`, `mountain_biking`, `cycling`.
+    #[serde(rename = "activityType", default)]
+    pub activity_type: GarminActivityType,
+}
+
+/// The `activityType` object of a Garmin activity. Only the `typeKey`
+/// (e.g. `road_biking`, `mountain_biking`) is relevant for us.
+#[derive(Debug, Deserialize, Default)]
+pub struct GarminActivityType {
+    #[serde(rename = "typeKey", default)]
+    pub type_key: String,
 }
 
 #[derive(Deserialize)]
@@ -45,14 +56,21 @@ pub fn create_client() -> Result<reqwest::Client, reqwest::Error> {
 
 /// Minimal Base-64 encoder (avoids adding a crate dependency).
 fn base64_encode(input: &[u8]) -> String {
-    const TABLE: &[u8] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
     let mut i = 0;
     while i < input.len() {
         let b0 = input[i] as u32;
-        let b1 = if i + 1 < input.len() { input[i + 1] as u32 } else { 0 };
-        let b2 = if i + 2 < input.len() { input[i + 2] as u32 } else { 0 };
+        let b1 = if i + 1 < input.len() {
+            input[i + 1] as u32
+        } else {
+            0
+        };
+        let b2 = if i + 2 < input.len() {
+            input[i + 2] as u32
+        } else {
+            0
+        };
         out.push(TABLE[((b0 >> 2) & 0x3F) as usize] as char);
         out.push(TABLE[(((b0 & 0x3) << 4) | (b1 >> 4)) as usize] as char);
         out.push(if i + 1 < input.len() {
@@ -113,7 +131,10 @@ pub async fn exchange_ticket(ticket: &str) -> Result<(String, String), Error> {
         if status.is_success() {
             let tok: DiTokenResponse = resp.json().await?;
             let refresh = tok.refresh_token.unwrap_or_default();
-            println!("Garmin DI token exchange succeeded with client_id={}", client_id);
+            println!(
+                "Garmin DI token exchange succeeded with client_id={}",
+                client_id
+            );
             return Ok((tok.access_token, refresh));
         }
 
@@ -173,9 +194,7 @@ pub async fn get_activities(
     limit: u32,
 ) -> Result<Vec<GarminActivity>, Error> {
     let resp = client
-        .get(
-            "https://connectapi.garmin.com/activitylist-service/activities/search/activities",
-        )
+        .get("https://connectapi.garmin.com/activitylist-service/activities/search/activities")
         .query(&[("start", start), ("limit", limit)])
         .header(AUTHORIZATION, format!("Bearer {}", access_token))
         .header(USER_AGENT, USER_AGENT_STR)
@@ -212,7 +231,11 @@ pub async fn download_gpx(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!("GPX download failed for {}: HTTP {} – {}", activity_id, status, body).into());
+        return Err(format!(
+            "GPX download failed for {}: HTTP {} – {}",
+            activity_id, status, body
+        )
+        .into());
     }
 
     Ok(resp.text().await?)
@@ -331,7 +354,10 @@ fn extract_csrf(html: &str) -> Option<String> {
     let mut pos = 0;
     while let Some(rel) = lower[pos..].find("<input") {
         let abs = pos + rel;
-        let tag_end = lower[abs..].find('>').map(|e| abs + e + 1).unwrap_or(lower.len());
+        let tag_end = lower[abs..]
+            .find('>')
+            .map(|e| abs + e + 1)
+            .unwrap_or(lower.len());
         let tag_lower = &lower[abs..tag_end];
         if tag_lower.contains("name=\"_csrf\"") || tag_lower.contains("name='_csrf'") {
             let tag_orig = &html[abs..tag_end];
