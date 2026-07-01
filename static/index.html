@@ -2482,6 +2482,7 @@
           // Update info panel if this is the selected track
           if (file === selectedTrackFile) {
             document.getElementById('ti-title').textContent = tracks[file].title || tracks[file].date || '';
+            document.getElementById('ti-type').textContent = activityTypeLabel(tracks[file].activity_type);
             document.getElementById('ti-dist').textContent = validDistKm.toFixed(2);
             document.getElementById('ti-avg').textContent = tracks[file].avg_speed_kmh != null ? tracks[file].avg_speed_kmh.toFixed(1) : '-';
             document.getElementById('ti-mavg').textContent = tracks[file].avg_moving_speed_kmh != null ? tracks[file].avg_moving_speed_kmh.toFixed(1) : '-';
