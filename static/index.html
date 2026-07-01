@@ -1812,31 +1812,48 @@
       });
 
       const labels = months.map(m => m.label);
-      // Share of mountain-bike rides per month (0..1) → drives the orange
-      // portion of each stacked bar; the rest (road + untyped) stays gray.
-      const mtbFrac = months.map(m => {
-        if (!m.rides.length) return 0;
-        const mtb = m.rides.filter(r => (r.activity_type || '') === 'mountain_biking').length;
-        return mtb / m.rides.length;
-      });
-      const typeLabels = months.map(m => typeBreakdownLabel(m.rides));
-      const speedData = months.map(m => {
-        const speeds = m.rides.filter(r => r.avg_moving_speed_kmh != null).map(r => r.avg_moving_speed_kmh);
-        if (!speeds.length) return null;
-        return +(speeds.reduce((a, b) => a + b, 0) / speeds.length).toFixed(1);
-      });
-      const distanceData = months.map(m => {
-        if (!m.rides.length) return null;
-        return +m.rides.reduce((s, r) => s + (r.distance_km || 0), 0).toFixed(1);
-      });
-      const elevationData = months.map(m => {
-        if (!m.rides.length) return null;
-        return m.rides.reduce((s, r) => s + (r.elevation_gain_m || 0), 0);
+      const breakdowns = months.map(m => typeBreakdownLabel(m.rides));
+
+      // Every activity type present in the visible months (generic – supports
+      // any number of types). Each becomes one stacked segment per bar.
+      const typeKeys = presentTypeKeys(months);
+
+      // Per-type aggregation helpers.
+      const sumDist = rs => +rs.reduce((s, r) => s + (r.distance_km || 0), 0).toFixed(1);
+      const sumEle = rs => Math.round(rs.reduce((s, r) => s + (r.elevation_gain_m || 0), 0));
+      const avgSpeed = rs => {
+        const v = rs.filter(r => r.avg_moving_speed_kmh != null).map(r => r.avg_moving_speed_kmh);
+        return v.length ? +(v.reduce((a, b) => a + b, 0) / v.length).toFixed(1) : null;
+      };
+
+      // Build one series per type. `barValue` drives the segment height,
+      // `tipValue` the tooltip number (they differ only for speed).
+      const buildSeries = (barValue, tipValue) => typeKeys.map(k => {
+        const ridesOf = m => m.rides.filter(r => (r.activity_type || '') === k);
+        return {
+          label: activityTypeLabel(k) || 'Ohne Typ',
+          color: activityTypeColor(k),
+          bar: months.map(m => { const rs = ridesOf(m); return rs.length ? barValue(rs, m) : null; }),
+          tip: months.map(m => { const rs = ridesOf(m); return rs.length ? tipValue(rs, m) : null; })
+        };
       });
 
-      drawStackedMonthChart('chart-month-speed', 'month-speed', labels, speedData, mtbFrac, typeLabels, 'km/h', 'Ø ');
-      drawStackedMonthChart('chart-month-distance', 'month-distance', labels, distanceData, mtbFrac, typeLabels, 'km', '');
-      drawStackedMonthChart('chart-month-elevation', 'month-elevation', labels, elevationData, mtbFrac, typeLabels, 'hm', '');
+      // Distance & elevation: the stacked segment IS the real per-type sum.
+      const distSeries = buildSeries(sumDist, sumDist);
+      const eleSeries = buildSeries(sumEle, sumEle);
+
+      // Speed: per-type averages cannot be summed, so the segment height is the
+      // monthly average split by each type's ride-count share (bar total = the
+      // monthly average); the tooltip still shows the real per-type average.
+      const speedBar = (rs, m) => {
+        const ma = avgSpeed(m.rides);
+        return ma != null && m.rides.length ? +(ma * rs.length / m.rides.length).toFixed(1) : null;
+      };
+      const speedSeries = buildSeries(speedBar, rs => avgSpeed(rs));
+
+      drawStackedMonthChart('chart-month-speed', 'month-speed', labels, speedSeries, 'km/h', breakdowns);
+      drawStackedMonthChart('chart-month-distance', 'month-distance', labels, distSeries, 'km', breakdowns);
+      drawStackedMonthChart('chart-month-elevation', 'month-elevation', labels, eleSeries, 'hm', breakdowns);
     }
 
     function drawBarChart(canvasId, key, labels, titles, files, data, unit, colors, types) {
@@ -1889,23 +1906,36 @@
       });
     }
 
-    // Monthly bar split into two stacked segments proportional to the ride mix:
-    // orange = share of mountain-bike rides, gray = the rest (road + untyped).
-    function drawStackedMonthChart(canvasId, key, labels, totals, mtbFrac, breakdowns, unit, valuePrefix) {
+    // Monthly bar split into one stacked segment per activity type (generic).
+    // `series` = [{ label, color, bar:[…], tip:[…] }]. The tooltip shows the
+    // real per-type value; only the topmost segment of each bar is rounded.
+    function drawStackedMonthChart(canvasId, key, labels, series, unit, breakdowns) {
       const ctx = document.getElementById(canvasId);
       if (!ctx) return;
       if (statCharts[key]) statCharts[key].destroy();
-      const roadData = totals.map((v, i) => v == null ? null : +(v * (1 - mtbFrac[i])).toFixed(2));
-      const mtbData = totals.map((v, i) => v == null ? null : +(v * mtbFrac[i]).toFixed(2));
+
+      // A segment is the topmost of its bar when no later series has a value.
+      const isTop = (seriesIndex, barIndex) => {
+        if (!(series[seriesIndex].bar[barIndex] > 0)) return false;
+        for (let s = seriesIndex + 1; s < series.length; s++) {
+          if (series[s].bar[barIndex] > 0) return false;
+        }
+        return true;
+      };
+
+      const datasets = series.map((s, si) => ({
+        label: s.label,
+        data: s.bar,
+        backgroundColor: s.color,
+        stack: 's',
+        maxBarThickness: 28,
+        borderSkipped: false,
+        borderRadius: bc => (isTop(si, bc.dataIndex) ? { topLeft: 3, topRight: 3 } : 0)
+      }));
+
       statCharts[key] = new Chart(ctx, {
         type: 'bar',
-        data: {
-          labels: labels,
-          datasets: [
-            { label: 'Rennrad', data: roadData, backgroundColor: CHART_COLOR_ROAD, stack: 's', maxBarThickness: 28 },
-            { label: 'Mountainbike', data: mtbData, backgroundColor: CHART_COLOR_MTB, stack: 's', maxBarThickness: 28 }
-          ]
-        },
+        data: { labels: labels, datasets: datasets },
         options: {
           responsive: true,
           maintainAspectRatio: false,
@@ -1915,16 +1945,13 @@
               callbacks: {
                 title: items => (items.length ? labels[items[0].dataIndex] : ''),
                 label: c => {
-                  const frac = c.datasetIndex === 1 ? mtbFrac[c.dataIndex] : (1 - mtbFrac[c.dataIndex]);
-                  return c.dataset.label + ': ' + Math.round(frac * 100) + '%';
+                  const v = series[c.datasetIndex].tip[c.dataIndex];
+                  return v == null ? '' : series[c.datasetIndex].label + ': ' + v + ' ' + unit;
                 },
                 afterBody: items => {
                   if (!items.length) return [];
-                  const i = items[0].dataIndex;
-                  const lines = [];
-                  if (totals[i] != null) lines.push('Wert: ' + valuePrefix + totals[i] + ' ' + unit);
-                  if (breakdowns[i]) lines.push(breakdowns[i]);
-                  return lines;
+                  const bd = breakdowns[items[0].dataIndex];
+                  return bd ? [bd] : [];
                 }
               }
             }
@@ -1969,13 +1996,41 @@
         .join(' ');
     }
 
-    // Shared chart colors: orange for mountain biking, gray for road biking
-    // (and every other/unknown type) so all statistics charts look consistent.
-    const CHART_COLOR_MTB = '#fc4c02';   // orange (from the original speed chart)
-    const CHART_COLOR_ROAD = '#9e9e9e';  // gray
+    // Shared chart colors. Known activity types get fixed colors; any other
+    // type is automatically assigned a distinct, stable color from a fallback
+    // palette on first use — so new Garmin activity types need no code change.
+    const CHART_COLOR_DEFAULT = '#9e9e9e'; // gray – road biking & untyped rides
+    const ACTIVITY_TYPE_COLORS = {
+      '': CHART_COLOR_DEFAULT,
+      road_biking: CHART_COLOR_DEFAULT,
+      mountain_biking: '#fc4c02', // orange (from the original speed chart)
+    };
+    const CHART_FALLBACK_PALETTE = [
+      '#1e88e5', '#43a047', '#8e24aa', '#f9a825',
+      '#00acc1', '#d81b60', '#6d4c41', '#3949ab'
+    ];
+    const _assignedTypeColors = {};
+    let _paletteCursor = 0;
 
     function activityTypeColor(typeKey) {
-      return typeKey === 'mountain_biking' ? CHART_COLOR_MTB : CHART_COLOR_ROAD;
+      const key = typeKey || '';
+      if (ACTIVITY_TYPE_COLORS[key]) return ACTIVITY_TYPE_COLORS[key];
+      if (!_assignedTypeColors[key]) {
+        _assignedTypeColors[key] =
+          CHART_FALLBACK_PALETTE[_paletteCursor % CHART_FALLBACK_PALETTE.length];
+        _paletteCursor++;
+      }
+      return _assignedTypeColors[key];
+    }
+
+    // All distinct activity types present in the given months, ordered so the
+    // gray "road/untyped" group sits at the bottom of the stack, then the rest.
+    function presentTypeKeys(months) {
+      const set = new Set();
+      months.forEach(m => m.rides.forEach(r => set.add(r.activity_type || '')));
+      const priority = ['', 'road_biking', 'mountain_biking'];
+      const rank = k => { const i = priority.indexOf(k); return i === -1 ? 99 : i; };
+      return Array.from(set).sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
     }
 
     // Count activity types among a list of track objects → { typeKey: count }.
@@ -1986,16 +2041,6 @@
         if (k) counts[k] = (counts[k] || 0) + 1;
       });
       return counts;
-    }
-
-    // Most frequent activity type key in a list of rides ('' if none).
-    function dominantTypeKey(rides) {
-      const counts = typeBreakdown(rides);
-      let best = '', bestN = 0;
-      for (const k in counts) {
-        if (counts[k] > bestN) { bestN = counts[k]; best = k; }
-      }
-      return best;
     }
 
     // Human-readable type breakdown, e.g. "5× Rennrad, 2× Mountainbike".
