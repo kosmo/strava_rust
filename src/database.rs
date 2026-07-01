@@ -378,6 +378,36 @@ pub fn get_all_activity_types(
     Ok(map)
 }
 
+/// Get the stored elevation gain (meters) for a given activity_id (any source).
+pub fn get_activity_elevation(conn: &Connection, activity_id: &str) -> Result<Option<i32>> {
+    let mut stmt = conn.prepare(
+        "SELECT elevation_gain_m FROM imported_activities WHERE activity_id = ?1 LIMIT 1",
+    )?;
+    let mut rows = stmt.query(params![activity_id])?;
+    if let Some(row) = rows.next()? {
+        Ok(row.get(0)?)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Get a map of activity_id → stored elevation gain (meters) for all imported
+/// activities.
+pub fn get_all_elevations(conn: &Connection) -> Result<std::collections::HashMap<String, i32>> {
+    let mut stmt = conn.prepare(
+        "SELECT activity_id, elevation_gain_m FROM imported_activities WHERE elevation_gain_m IS NOT NULL",
+    )?;
+    let pairs = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
+    })?;
+    let mut map = std::collections::HashMap::new();
+    for pair in pairs {
+        let (id, ele) = pair?;
+        map.insert(id, ele);
+    }
+    Ok(map)
+}
+
 /// Get a map of activity_id → activity_name for all imported activities that have a name.
 pub fn get_all_activity_names(
     conn: &Connection,

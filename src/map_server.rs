@@ -190,6 +190,14 @@ async fn list_gpx_files() -> Json<Vec<GpxFileInfo>> {
         .and_then(|(conn, _)| database::get_all_activity_types(&conn).ok())
         .unwrap_or_default();
 
+    // Load stored elevation gain (numeric_id → meters). For Garmin activities
+    // this is the barometric value from the Garmin API; for Strava it is the
+    // smoothed GPX calculation. Used instead of recomputing from <ele> on the fly.
+    let db_elevations: std::collections::HashMap<String, i32> = database::init_db()
+        .ok()
+        .and_then(|(conn, _)| database::get_all_elevations(&conn).ok())
+        .unwrap_or_default();
+
     // First pass: collect all Garmin files and build two maps:
     //   start_timestamp → garmin_title   (for title matching)
     //   start_timestamp → true           (for deduplication: skip matching Strava files)
@@ -249,13 +257,19 @@ async fn list_gpx_files() -> Json<Vec<GpxFileInfo>> {
             // Use activity start time for sorting (consistent, independent of file mtime).
             let modified = extract_gpx_time(&content);
             let distance_km = calculate_distance_from_content(&content);
-            let elevation_gain_m = calculate_elevation_gain(&content);
             let gpx_title = extract_gpx_name(&content);
 
             let db_key = stem
                 .strip_prefix("activity_")
                 .or_else(|| stem.strip_prefix("garmin_"))
                 .unwrap_or(stem);
+
+            // Prefer the stored elevation (Garmin = barometric API value, Strava
+            // = smoothed GPX calc); fall back to on-the-fly GPX calc if unknown.
+            let elevation_gain_m = db_elevations
+                .get(db_key)
+                .copied()
+                .unwrap_or_else(|| calculate_elevation_gain(&content));
 
             // For Strava files: find matching Garmin title by timestamp.
             let garmin_match = if is_strava {
@@ -481,7 +495,7 @@ fn calculate_distance_from_content(content: &str) -> f64 {
 /// by a marker in the `meta` table so it doesn't re-run on every startup.
 fn recalculate_imported_elevations(conn: &mut rusqlite::Connection, gpx_dir: &PathBuf) {
     // Bump this when the elevation algorithm changes to trigger another recompute.
-    const ELEVATION_ALGO_VERSION: &str = "3";
+    const ELEVATION_ALGO_VERSION: &str = "4";
 
     if database::get_meta(conn, "elevation_algo_version").as_deref() == Some(ELEVATION_ALGO_VERSION)
     {
@@ -499,7 +513,14 @@ fn recalculate_imported_elevations(conn: &mut rusqlite::Connection, gpx_dir: &Pa
     );
 
     let mut updated = 0;
-    for (activity_id, _source) in &imported {
+    for (activity_id, source) in &imported {
+        // Garmin activities keep the barometric elevation gain from the Garmin
+        // API (the device's default source) — don't overwrite it with the GPX
+        // calculation. It is refreshed on each Garmin sync instead.
+        if source == "garmin" {
+            continue;
+        }
+
         // The same activity_id may be stored as a Strava or Garmin GPX file.
         let candidates = [
             gpx_dir.join(format!("activity_{}.gpx", activity_id)),
@@ -1406,6 +1427,7 @@ async fn fetch_garmin_activities(
     let mut imported_count: u32 = 0;
     let mut title_updated_count: u32 = 0;
     let mut type_updated_count: u32 = 0;
+    let mut elevation_updated_count: u32 = 0;
     let mut imported_records: Vec<(String, String, f64, i32, String)> = Vec::new();
 
     for act in &activities {
@@ -1453,6 +1475,20 @@ async fn fetch_garmin_activities(
                     }
                 }
             }
+            // Backfill / refresh the barometric elevation gain from Garmin.
+            let api_elev = act.elevation_gain.round() as i32;
+            if api_elev > 0 {
+                if let Ok((conn, _)) = database::init_db() {
+                    let old_elev = database::get_activity_elevation(&conn, &id_str)
+                        .unwrap_or(None)
+                        .unwrap_or_default();
+                    if old_elev != api_elev {
+                        if database::update_activity_elevation(&conn, &id_str, api_elev).is_ok() {
+                            elevation_updated_count += 1;
+                        }
+                    }
+                }
+            }
             continue;
         }
 
@@ -1495,7 +1531,11 @@ async fn fetch_garmin_activities(
                     Some(name.as_str()),
                     *dist,
                     *elev,
-                    if ty.is_empty() { None } else { Some(ty.as_str()) },
+                    if ty.is_empty() {
+                        None
+                    } else {
+                        Some(ty.as_str())
+                    },
                 );
             }
         }
@@ -1505,10 +1545,17 @@ async fn fetch_garmin_activities(
 
     let message = match (imported_count, title_updated_count) {
         (0, 0) => {
+            let mut parts = Vec::new();
             if type_updated_count > 0 {
-                format!("{} Aktivitätsarten von Garmin übernommen", type_updated_count)
-            } else {
+                parts.push(format!("{} Aktivitätsarten", type_updated_count));
+            }
+            if elevation_updated_count > 0 {
+                parts.push(format!("{} Höhenmeter", elevation_updated_count));
+            }
+            if parts.is_empty() {
                 "Keine Änderungen.".to_string()
+            } else {
+                format!("{} von Garmin übernommen", parts.join(" und "))
             }
         }
         (i, 0) => format!("{} Garmin-Aktivitäten importiert", i),
@@ -1523,7 +1570,7 @@ async fn fetch_garmin_activities(
         message,
         imported: imported_count,
         // `skipped` doubles as the “something changed, refresh the UI” signal for
-        // the frontend: title updates + newly backfilled activity types.
-        skipped: title_updated_count + type_updated_count,
+        // the frontend: title, activity-type and elevation backfills.
+        skipped: title_updated_count + type_updated_count + elevation_updated_count,
     })
 }
