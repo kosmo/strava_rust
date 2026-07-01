@@ -7,33 +7,59 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
+    /* ── 80s Neon theme ─────────────────────────────────────────────
+       --neon-cyan   : primary accent (replaces the old green)
+       --neon-purple : secondary accent (replaces the old orange)
+    */
+    :root {
+      --bg: #0d0221;
+      --surface: #150a2b;
+      --surface-2: #1e0f3d;
+      --surface-3: #281550;
+      --border: #3d2a63;
+      --text: #ece4ff;
+      --text-dim: #b7a6e0;
+      --text-muted: #8a76b9;
+      --neon-cyan: #00e5ff;
+      --neon-cyan-dim: #0aa8bd;
+      --neon-purple: #c026ff;
+      --neon-purple-dim: #8a1fc0;
+      --glow-cyan: 0 0 8px rgba(0, 229, 255, 0.55);
+      --glow-purple: 0 0 8px rgba(192, 38, 255, 0.55);
+    }
+
     body {
       margin: 0;
       padding: 0;
       display: flex;
+      background: var(--bg);
+      color: var(--text);
     }
 
     #sidebar {
       width: 300px;
       height: 100vh;
       overflow-y: auto;
-      background: #f8f9fa;
-      border-right: 1px solid #dee2e6;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
       padding: 10px;
       box-sizing: border-box;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       font-size: 14px;
+      color: var(--text);
     }
 
     #sidebar h3 {
       margin: 0 0 6px 0;
+      color: var(--neon-cyan);
+      text-shadow: var(--glow-cyan);
     }
 
     .tab-bar {
       display: flex;
       gap: 4px;
       margin-bottom: 10px;
-      border-bottom: 2px solid #dee2e6;
+      border-bottom: 2px solid var(--border);
       padding-bottom: 4px;
     }
 
@@ -45,20 +71,21 @@
       cursor: pointer;
       font-size: 13px;
       font-family: inherit;
-      color: #666;
+      color: var(--text-muted);
       border-radius: 4px 4px 0 0;
       transition: background 0.15s, color 0.15s;
     }
 
     .tab-btn:hover {
-      background: #e9ecef;
-      color: #333;
+      background: var(--surface-3);
+      color: var(--text);
     }
 
     .tab-btn.active {
-      background: #28a745;
-      color: white;
+      background: var(--neon-cyan);
+      color: #06121a;
       font-weight: bold;
+      box-shadow: var(--glow-cyan);
     }
 
     .tab-content {
@@ -78,19 +105,20 @@
     #track-table th {
       position: sticky;
       top: 0;
-      background: #f8f9fa;
+      background: var(--surface);
       text-align: left;
       padding: 6px 4px;
-      border-bottom: 2px solid #dee2e6;
+      border-bottom: 2px solid var(--border);
       font-size: 12px;
-      color: #444;
+      color: var(--text-dim);
       white-space: nowrap;
     }
 
     #track-table td {
       padding: 5px 4px;
-      border-bottom: 1px solid #f0f0f0;
+      border-bottom: 1px solid var(--border);
       vertical-align: middle;
+      color: var(--text);
     }
 
     #track-table tbody tr {
@@ -98,11 +126,12 @@
     }
 
     #track-table tbody tr:hover td {
-      background: #f0f7f0;
+      background: var(--surface-3);
     }
 
     #track-table tbody tr.selected td {
-      background: #d4edda;
+      background: rgba(0, 229, 255, 0.15);
+      color: var(--neon-cyan);
       font-weight: bold;
     }
 
@@ -119,13 +148,13 @@
       left: 50%;
       transform: translateX(-50%);
       z-index: 1000;
-      background: rgba(255, 255, 255, 0.93);
-      border: 1px solid #ccc;
+      background: rgba(21, 10, 43, 0.93);
+      border: 1px solid var(--neon-cyan);
       border-radius: 10px;
       padding: 12px 24px;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       font-size: 14px;
-      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+      box-shadow: 0 0 18px rgba(0, 229, 255, 0.35);
       text-align: center;
       min-width: 260px;
       pointer-events: none;
@@ -135,12 +164,13 @@
       font-weight: bold;
       font-size: 15px;
       margin-bottom: 8px;
-      color: #333;
+      color: var(--text);
     }
 
     #track-info .ti-type {
       font-size: 12px;
-      color: #666;
+      color: var(--neon-purple);
+      text-shadow: var(--glow-purple);
       margin-bottom: 8px;
     }
 
@@ -163,12 +193,13 @@
     #track-info .ti-val {
       font-size: 20px;
       font-weight: bold;
-      color: #e01010;
+      color: var(--neon-cyan);
+      text-shadow: var(--glow-cyan);
     }
 
     #track-info .ti-lbl {
       font-size: 11px;
-      color: #888;
+      color: var(--text-muted);
       margin-top: 2px;
     }
 
@@ -180,11 +211,12 @@
       right: 0;
       bottom: 0;
       z-index: 1100;
-      background: #f8f9fa;
+      background: var(--bg);
       overflow-y: scroll;
       padding: 20px;
       box-sizing: border-box;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: var(--text);
     }
 
     #statistik-view.active {
@@ -192,18 +224,19 @@
     }
 
     #statistik-view .stat-chart {
-      background: #fff;
-      border: 1px solid #dee2e6;
+      background: var(--surface);
+      border: 1px solid var(--border);
       border-radius: 10px;
       padding: 14px 16px 16px;
       margin-bottom: 18px;
-      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+      box-shadow: 0 0 12px rgba(0, 229, 255, 0.08);
     }
 
     #statistik-view .stat-chart h4 {
       margin: 0 0 10px 0;
       font-size: 15px;
-      color: #333;
+      color: var(--neon-cyan);
+      text-shadow: var(--glow-cyan);
     }
 
     #statistik-view .stat-canvas-wrap {
@@ -214,7 +247,7 @@
     .controls {
       margin-bottom: 10px;
       padding-bottom: 10px;
-      border-bottom: 1px solid #dee2e6;
+      border-bottom: 1px solid var(--border);
     }
 
     .controls button {
@@ -226,7 +259,7 @@
     .tile-controls {
       margin-bottom: 10px;
       padding: 10px;
-      background: white;
+      background: var(--surface-2);
       border-radius: 4px;
     }
 
@@ -238,6 +271,7 @@
 
     .tile-controls input {
       margin-right: 8px;
+      accent-color: var(--neon-cyan);
     }
 
     .icon-btn-row {
@@ -250,9 +284,9 @@
       width: 36px;
       height: 36px;
       border-radius: 8px;
-      border: 1px solid #bbb;
-      background: #aaaaaa;
-      color: white;
+      border: 1px solid var(--border);
+      background: var(--surface-3);
+      color: var(--text-dim);
       cursor: pointer;
       display: flex;
       align-items: center;
@@ -262,8 +296,10 @@
     }
 
     .icon-toggle-btn.active {
-      background: #28a745;
-      border-color: #1e7e34;
+      background: var(--neon-cyan);
+      border-color: var(--neon-cyan);
+      color: #06121a;
+      box-shadow: var(--glow-cyan);
     }
 
     .icon-toggle-btn:hover {
@@ -273,12 +309,13 @@
     .tile-stats {
       margin-top: 8px;
       font-size: 12px;
-      color: #666;
+      color: var(--text-muted);
     }
 
     .tile-stats .count {
       font-weight: bold;
-      color: #333;
+      color: var(--neon-cyan);
+      text-shadow: var(--glow-cyan);
       font-size: 16px;
     }
 
@@ -296,9 +333,9 @@
       gap: 8px;
       margin-bottom: 10px;
       padding: 8px 10px;
-      background: #e8f4e8;
+      background: var(--surface-2);
       border-radius: 4px;
-      border: 1px solid #c3e6c3;
+      border: 1px solid var(--border);
     }
 
     #sync-btn {
@@ -307,31 +344,36 @@
       height: 36px;
       border-radius: 50%;
       border: none;
-      background: #28a745;
-      color: white;
+      background: var(--neon-cyan);
+      color: #06121a;
       font-size: 18px;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
       transition: background 0.2s;
+      box-shadow: var(--glow-cyan);
     }
 
     #sync-btn:hover {
-      background: #218838;
+      background: #33ecff;
     }
 
     #sync-btn:disabled {
-      background: #6c757d;
+      background: #4a3d66;
+      color: var(--text-muted);
+      box-shadow: none;
       cursor: not-allowed;
     }
 
     #sync-btn.needs-auth {
-      background: #fc4c02;
+      background: var(--neon-purple);
+      color: #ffffff;
+      box-shadow: var(--glow-purple);
     }
 
     #sync-btn.needs-auth:hover {
-      background: #e04302;
+      background: #d24dff;
     }
 
     #sync-btn.spinning svg {
@@ -344,7 +386,7 @@
       height: 36px;
       border-radius: 50%;
       border: none;
-      background: #ff6900;
+      background: var(--neon-purple);
       color: white;
       font-size: 18px;
       cursor: pointer;
@@ -352,19 +394,22 @@
       align-items: center;
       justify-content: center;
       transition: background 0.2s;
+      box-shadow: var(--glow-purple);
     }
 
     #garmin-btn:hover {
-      background: #e05d00;
+      background: #d24dff;
     }
 
     #garmin-btn:disabled {
-      background: #6c757d;
+      background: #4a3d66;
+      color: var(--text-muted);
+      box-shadow: none;
       cursor: not-allowed;
     }
 
     #garmin-btn.needs-auth {
-      background: #ff6900;
+      background: var(--neon-purple);
     }
 
     #garmin-btn.spinning svg {
@@ -375,15 +420,16 @@
       display: none;
       margin-top: 8px;
       padding: 10px;
-      background: #fff8f0;
-      border: 1px solid #ff6900;
+      background: var(--surface-2);
+      border: 1px solid var(--neon-purple);
       border-radius: 6px;
       font-size: 12px;
     }
 
     #garmin-login-panel .panel-title {
       font-weight: bold;
-      color: #ff6900;
+      color: var(--neon-purple);
+      text-shadow: var(--glow-purple);
       margin-bottom: 8px;
     }
 
@@ -392,9 +438,11 @@
       box-sizing: border-box;
       padding: 5px 7px;
       margin-bottom: 6px;
-      border: 1px solid #ccc;
+      border: 1px solid var(--border);
       border-radius: 4px;
       font-size: 12px;
+      background: var(--surface-3);
+      color: var(--text);
     }
 
     #garmin-login-panel .panel-btns {
@@ -405,7 +453,7 @@
     #garmin-login-btn {
       flex: 1;
       padding: 5px;
-      background: #ff6900;
+      background: var(--neon-purple);
       color: white;
       border: none;
       border-radius: 4px;
@@ -414,18 +462,20 @@
     }
 
     #garmin-login-btn:hover {
-      background: #e05d00;
+      background: #d24dff;
     }
 
     #garmin-login-btn:disabled {
-      background: #aaa;
+      background: #4a3d66;
+      color: var(--text-muted);
       cursor: not-allowed;
     }
 
     #garmin-login-cancel {
       padding: 5px 10px;
-      background: #eee;
-      border: 1px solid #ccc;
+      background: var(--surface-3);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
       border-radius: 4px;
       cursor: pointer;
       font-size: 12px;
@@ -435,7 +485,7 @@
       display: flex;
       gap: 4px;
       margin-bottom: 14px;
-      border-bottom: 2px solid #dee2e6;
+      border-bottom: 2px solid var(--border);
       padding-bottom: 4px;
     }
 
@@ -446,20 +496,21 @@
       cursor: pointer;
       font-size: 13px;
       font-family: inherit;
-      color: #666;
+      color: var(--text-muted);
       border-radius: 4px 4px 0 0;
       transition: background 0.15s, color 0.15s;
     }
 
     .stat-sub-tab:hover {
-      background: #e9ecef;
-      color: #333;
+      background: var(--surface-3);
+      color: var(--text);
     }
 
     .stat-sub-tab.active {
-      background: #28a745;
-      color: white;
+      background: var(--neon-cyan);
+      color: #06121a;
       font-weight: bold;
+      box-shadow: var(--glow-cyan);
     }
 
     .stat-sub-content {
@@ -482,7 +533,7 @@
 
     #sync-status {
       font-size: 12px;
-      color: #444;
+      color: var(--text-dim);
       line-height: 1.3;
     }
 
@@ -495,20 +546,23 @@
     }
 
     .import-status.success {
-      background: #d4edda;
-      color: #155724;
+      background: rgba(0, 229, 255, 0.12);
+      color: var(--neon-cyan);
+      border: 1px solid var(--neon-cyan-dim);
       display: block;
     }
 
     .import-status.error {
-      background: #f8d7da;
-      color: #721c24;
+      background: rgba(255, 61, 138, 0.12);
+      color: #ff5c9d;
+      border: 1px solid #ff3d8a;
       display: block;
     }
 
     .import-status.loading {
-      background: #fff3cd;
-      color: #856404;
+      background: rgba(192, 38, 255, 0.12);
+      color: var(--neon-purple);
+      border: 1px solid var(--neon-purple-dim);
       display: block;
     }
   </style>
@@ -580,6 +634,26 @@
               <path d="M3 17 C6 17 6 7 9 7 C12 7 12 17 15 17 C18 17 18 7 21 7" />
             </svg>
           </button>
+          <button id="btn-cluster" class="icon-toggle-btn active" title="Yard anzeigen" onclick="toggleClusterBtn()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
+              <rect x="6" y="1" width="4" height="4" rx="0.5" />
+              <rect x="1" y="6" width="4" height="4" rx="0.5" />
+              <rect x="6" y="6" width="4" height="4" rx="0.5" />
+              <rect x="11" y="6" width="4" height="4" rx="0.5" />
+              <rect x="6" y="11" width="4" height="4" rx="0.5" />
+            </svg>
+          </button>
+          <button id="btn-square" class="icon-toggle-btn active" title="Übersquadrat anzeigen"
+            onclick="toggleSquareBtn()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 16 16" fill="none"
+              stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+              <rect x="1.5" y="1.5" width="13" height="13" rx="1" />
+              <line x1="6" y1="1.5" x2="6" y2="14.5" />
+              <line x1="10.5" y1="1.5" x2="10.5" y2="14.5" />
+              <line x1="1.5" y1="6" x2="14.5" y2="6" />
+              <line x1="1.5" y1="10.5" x2="14.5" y2="10.5" />
+            </svg>
+          </button>
         </div>
         <div class="tile-stats">
           <span class="count" id="tile-count">-</span> Tiles besucht (Zoom 14)<br>
@@ -590,14 +664,6 @@
           <span class="count" id="max-cluster">-</span> Yard<br>
           <span class="count" id="max-square">-</span> Übersquadrat
         </div>
-        <label style="margin-top: 8px; display: block;">
-          <input type="checkbox" id="show-cluster" checked>
-          Yard anzeigen
-        </label>
-        <label>
-          <input type="checkbox" id="show-square" checked>
-          Übersquadrat anzeigen
-        </label>
       </div>
     </div>
     <div id="tab-strecken" class="tab-content">
@@ -671,6 +737,12 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script>
+    // Neon dark theme defaults for all charts
+    if (window.Chart) {
+      Chart.defaults.color = '#b7a6e0';
+      Chart.defaults.borderColor = 'rgba(61, 42, 99, 0.6)';
+    }
+
     const map = L.map('map').setView([51.25, 12.14], 13);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors'
@@ -739,17 +811,17 @@
     // Newest = dark green, oldest = light green/yellow
     function getTileColor(timestamp, minTime, maxTime) {
       if (!timestamp || timestamp === 0 || minTime === maxTime) {
-        return '#90EE90'; // Light green for unknown dates
+        return '#33ccff'; // mid neon blue for unknown dates
       }
 
       // Calculate ratio: 1 = newest, 0 = oldest
       const ratio = (timestamp - minTime) / (maxTime - minTime);
 
-      // Gradient from light green (oldest) to dark green (newest)
-      // Light green: rgb(144, 238, 144) -> Dark green: rgb(34, 139, 34)
-      const r = Math.round(144 - ratio * 110);
-      const g = Math.round(238 - ratio * 99);
-      const b = Math.round(144 - ratio * 110);
+      // Neon-blue gradient from deep blue (oldest) to bright neon cyan (newest)
+      // Deep blue: rgb(30, 90, 170) -> Neon cyan: rgb(0, 229, 255)
+      const r = Math.round(30 - ratio * 30);
+      const g = Math.round(90 + ratio * 139);
+      const b = Math.round(170 + ratio * 85);
 
       return `rgb(${r}, ${g}, ${b})`;
     }
@@ -910,27 +982,29 @@
     // Load square/cluster on page load
     loadSquareCluster();
 
-    // Toggle square visibility
+    // Toggle square visibility via icon button
     let squareVisible = true;
-    document.getElementById('show-square').addEventListener('change', (e) => {
-      squareVisible = e.target.checked;
+    function toggleSquareBtn() {
+      squareVisible = !squareVisible;
+      document.getElementById('btn-square').classList.toggle('active', squareVisible);
       if (squareVisible) {
         squareLayer.addTo(map);
       } else {
         squareLayer.remove();
       }
-    });
+    }
 
-    // Toggle cluster visibility
+    // Toggle cluster visibility via icon button
     let clusterVisible = true;
-    document.getElementById('show-cluster').addEventListener('change', (e) => {
-      clusterVisible = e.target.checked;
+    function toggleClusterBtn() {
+      clusterVisible = !clusterVisible;
+      document.getElementById('btn-cluster').classList.toggle('active', clusterVisible);
       if (clusterVisible) {
         clusterLayer.addTo(map);
       } else {
         clusterLayer.remove();
       }
-    });
+    }
 
     // Toggle tiles visibility via icon button
     function toggleTilesBtn() {
@@ -1658,12 +1732,12 @@
 
     // Generate color gradient from red (newest) to green (oldest)
     function getGradientColor(index, total) {
-      if (total <= 1) return '#e6194b'; // red for single track
+      if (total <= 1) return '#00e5ff'; // neon cyan for single track
       const ratio = index / (total - 1);
-      // Red: rgb(230, 25, 75) -> Green: rgb(60, 180, 75)
-      const r = Math.round(230 - ratio * 170);
-      const g = Math.round(25 + ratio * 155);
-      const b = Math.round(75);
+      // Neon cyan: rgb(0, 229, 255) -> Neon purple: rgb(192, 38, 255)
+      const r = Math.round(0 + ratio * 192);
+      const g = Math.round(229 - ratio * 191);
+      const b = Math.round(255);
       return `rgb(${r}, ${g}, ${b})`;
     }
 
@@ -1999,15 +2073,15 @@
     // Shared chart colors. Known activity types get fixed colors; any other
     // type is automatically assigned a distinct, stable color from a fallback
     // palette on first use — so new Garmin activity types need no code change.
-    const CHART_COLOR_DEFAULT = '#9e9e9e'; // gray – road biking & untyped rides
+    const CHART_COLOR_DEFAULT = '#00e5ff'; // neon cyan – road biking & untyped rides
     const ACTIVITY_TYPE_COLORS = {
       '': CHART_COLOR_DEFAULT,
       road_biking: CHART_COLOR_DEFAULT,
-      mountain_biking: '#fc4c02', // orange (from the original speed chart)
+      mountain_biking: '#c026ff', // neon purple
     };
     const CHART_FALLBACK_PALETTE = [
-      '#1e88e5', '#43a047', '#8e24aa', '#f9a825',
-      '#00acc1', '#d81b60', '#6d4c41', '#3949ab'
+      '#00e5ff', '#c026ff', '#ff3d8a', '#f9f871',
+      '#39ff14', '#ff8f00', '#00ffc8', '#7c4dff'
     ];
     const _assignedTypeColors = {};
     let _paletteCursor = 0;
@@ -2350,7 +2424,8 @@
 
       files.forEach((fileInfo, index) => {
         const file = fileInfo.filename;
-        const TRACK_COLOR = '#e01010';
+        // Each track gets a distinct neon blue→purple shade
+        const TRACK_COLOR = getGradientColor(index, total);
         tracks[file] = {
           color: TRACK_COLOR,
           polyline: null,
